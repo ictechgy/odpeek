@@ -1,0 +1,33 @@
+{
+  "name": "od-mobile",
+  "version": "0.1.0",
+  "description": "Expose Open Design's local web UI to your Tailscale tailnet so you can view design artifacts on your phone.",
+  "type": "module",
+  "bin": {
+    "od-mobile": "bin/od-mobile.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "open-design",
+    "tailscale",
+    "mobile",
+    "preview",
+    "cli"
+  ],
+  "author": "Coden <ictechgy@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/ictechgy/od-mobile#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ictechgy/od-mobile.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ictechgy/od-mobile/issues"
+  }
+}

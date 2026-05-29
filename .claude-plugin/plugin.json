@@ -1,0 +1,10 @@
+{
+  "name": "od-mobile",
+  "version": "0.1.0",
+  "description": "View Open Design artifacts on your phone by exposing the local web UI over Tailscale.",
+  "author": {
+    "name": "Coden",
+    "email": "ictechgy@gmail.com"
+  },
+  "homepage": "https://github.com/ictechgy/od-mobile"
+}
