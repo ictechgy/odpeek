@@ -53,7 +53,9 @@ export function selfIp4(status) {
 
 /**
  * localhost:targetPort 를 tailnet의 servePort(HTTP)로 노출한다.
- * tailnet 인증서가 없어도 동작하도록 HTTPS 대신 평문 HTTP를 쓴다
+ * macOS는 방화벽/유저스페이스 네트워킹 때문에 일반 바인딩 소켓이 피어에게
+ * 닿지 않으므로, 반드시 tailscaled를 거치는 serve를 사용해야 한다.
+ * tailnet 인증서가 없어도 되도록 HTTPS 대신 평문 HTTP를 쓴다
  * (트래픽은 Tailscale의 WireGuard로 이미 암호화된다).
  */
 export function serveStart(bin, servePort, targetPort) {

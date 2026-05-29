@@ -28,7 +28,6 @@ Commands:
   up        (기본) OD 포트를 감지해 tailnet에 노출
   off       노출 해제
   url       폰에서 열 주소(MagicDNS 이름) 출력
-  ip        폰에서 열 주소(tailnet IP, DNS 불필요) 출력
   status    현재 serve 상태와 감지된 포트 출력
   doctor    환경 진단(tailscale / OD / MagicDNS)
 
@@ -36,7 +35,10 @@ Options:
   -p, --port <n>     tailnet 노출 포트 (기본 ${DEFAULT_PORT}, env OD_MOBILE_PORT)
       --pattern <s>  OD 프로세스 매칭 패턴 (기본 ${DEFAULT_PATTERN})
   -h, --help         도움말
-  -v, --version      버전`;
+  -v, --version      버전
+
+참고: tailscale serve는 MagicDNS '이름'에만 응답하므로(IP 불가), 폰에서
+      Tailscale 앱의 "Use Tailscale DNS"를 켜고 이름 주소로 접속해야 한다.`;
 
 /**
  * argv를 옵션 객체로 파싱한다.
@@ -74,30 +76,20 @@ function requireTailscale() {
   return bin;
 }
 
-/**
- * 폰 접속 주소(이름 기반 / IP 기반)를 계산한다.
- * @returns {{nameUrl:string|null, ipUrl:string|null}}
- */
-function buildUrls(bin, port) {
-  const status = statusJson(bin);
-  const dns = selfDnsName(status);
-  const ip = selfIp4(status);
-  return {
-    nameUrl: dns ? `http://${dns}:${port}` : null,
-    ipUrl: ip ? `http://${ip}:${port}` : null,
-  };
-}
-
 /** OD 포트를 감지해 tailnet에 노출하고 접속 주소를 출력한다. */
 function cmdUp(opts) {
   const bin = requireTailscale();
   const { pid, port } = detectWebPort(opts.pattern);
   serveStart(bin, opts.port, port);
-  const { nameUrl, ipUrl } = buildUrls(bin, opts.port);
+  const dns = selfDnsName(statusJson(bin));
   console.log(`OD 웹 UI(localhost:${port}, pid ${pid}) → tailnet 노출 완료.\n`);
-  if (ipUrl) console.log(`  폰에서 열기(IP, 가장 안정):  ${ipUrl}`);
-  if (nameUrl) console.log(`  폰에서 열기(이름):           ${nameUrl}`);
-  console.log('\n  해제: od-mobile off');
+  if (dns) {
+    console.log(`  폰에서 열기:  http://${dns}:${opts.port}`);
+  } else {
+    console.log('  MagicDNS 이름을 확인하지 못했습니다. `od-mobile doctor`로 점검하세요.');
+  }
+  console.log('\n  ※ 폰 Tailscale 앱에서 "Use Tailscale DNS"가 켜져 있어야 이름이 풀립니다.');
+  console.log('  해제: od-mobile off');
 }
 
 /** tailnet 노출을 해제한다. */
@@ -108,20 +100,11 @@ function cmdOff(opts) {
 
 /** MagicDNS 이름 기반 접속 주소를 출력한다. */
 function cmdUrl(opts) {
-  const { nameUrl } = buildUrls(requireTailscale(), opts.port);
-  if (!nameUrl) {
-    throw new Error('MagicDNS 이름을 확인할 수 없습니다. `od-mobile ip`를 사용하세요.');
+  const dns = selfDnsName(statusJson(requireTailscale()));
+  if (!dns) {
+    throw new Error('MagicDNS 이름을 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
   }
-  console.log(nameUrl);
-}
-
-/** tailnet IP 기반 접속 주소를 출력한다(DNS 불필요). */
-function cmdIp(opts) {
-  const { ipUrl } = buildUrls(requireTailscale(), opts.port);
-  if (!ipUrl) {
-    throw new Error('tailnet IP를 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
-  }
-  console.log(ipUrl);
+  console.log(`http://${dns}:${opts.port}`);
 }
 
 /** 현재 serve 상태와 감지된 OD 포트를 출력한다. */
@@ -170,7 +153,6 @@ const COMMANDS = {
   up: cmdUp,
   off: cmdOff,
   url: cmdUrl,
-  ip: cmdIp,
   status: cmdStatus,
   doctor: cmdDoctor,
 };
