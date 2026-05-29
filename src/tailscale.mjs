@@ -52,24 +52,27 @@ export function selfIp4(status) {
 }
 
 /**
- * localhost:targetPort 를 tailnet의 servePort(HTTP)로 노출한다.
- * macOS는 방화벽/유저스페이스 네트워킹 때문에 일반 바인딩 소켓이 피어에게
- * 닿지 않으므로, 반드시 tailscaled를 거치는 serve를 사용해야 한다.
- * tailnet 인증서가 없어도 되도록 HTTPS 대신 평문 HTTP를 쓴다
- * (트래픽은 Tailscale의 WireGuard로 이미 암호화된다).
+ * localhost:targetPort 를 tailnet의 servePort로 노출한다(L4 TCP 패스스루).
+ *
+ * 두 가지 macOS 제약을 동시에 우회하기 위해 TCP 모드를 쓴다:
+ *  1) macOS 방화벽(스텔스)+유저스페이스 네트워킹 → 일반 바인딩 소켓은 피어에게
+ *     안 닿으므로 tailscaled를 거치는 serve가 필요하다.
+ *  2) serve의 HTTP 모드는 MagicDNS '이름'으로 vhost 라우팅하여 IP 접속이 404가
+ *     된다. `--tcp`(L4)는 Host를 보지 않고 그대로 흘려보내므로 IP로도 접속된다
+ *     (폰 MagicDNS 설정과 무관 → 가장 견고).
  */
 export function serveStart(bin, servePort, targetPort) {
   runTailscale(bin, [
     'serve',
     '--bg',
-    `--http=${servePort}`,
-    `http://127.0.0.1:${targetPort}`,
+    `--tcp=${servePort}`,
+    `tcp://127.0.0.1:${targetPort}`,
   ]);
 }
 
 /** servePort 노출을 해제한다. */
 export function serveStop(bin, servePort) {
-  runTailscale(bin, ['serve', `--http=${servePort}`, 'off']);
+  runTailscale(bin, ['serve', `--tcp=${servePort}`, 'off']);
 }
 
 /**

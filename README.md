@@ -42,6 +42,7 @@ brew install ictechgy/tap/od-mobile
 
 ```bash
 od-mobile up        # OD 포트를 감지해 tailnet에 노출 (기본 명령)
+od-mobile ip        # 폰에서 열 주소(tailnet IP) 출력 — DNS 불필요, 권장
 od-mobile url       # 폰에서 열 주소(MagicDNS 이름) 출력
 od-mobile status    # 현재 serve 상태 + 감지된 OD 포트
 od-mobile doctor    # 환경 진단(tailscale / OD / MagicDNS)
@@ -58,14 +59,14 @@ od-mobile off       # 노출 해제
 ### 폰에서 보기
 
 1. 맥에서 `od-mobile up` 실행
-2. **폰 Tailscale 앱에서 "Use Tailscale DNS"를 켠다** (최초 1회)
-3. 출력된 **이름 주소**(`http://<host>.ts.net:8080`)를 폰 브라우저에서 연다
-   - 폰의 Tailscale이 켜져 있어야 한다
+2. 폰의 Tailscale이 켜져 있는 상태에서, 출력된 **IP 주소**(`http://100.x.y.z:8080`)를
+   폰 브라우저에서 연다 — **MagicDNS 설정과 무관하게 동작한다.**
 
-> **IP로는 접속이 안 된다.** macOS는 방화벽/유저스페이스 네트워킹 때문에 일반
-> 바인딩 소켓이 피어에게 닿지 않아 `tailscale serve`를 거쳐야 하는데, serve는
-> MagicDNS '이름'에만 응답한다(IP는 404). 그래서 폰의 Tailscale DNS가 켜져 있어야
-> 이름이 풀린다.
+> 왜 IP가 되나: 노출에 `serve`의 **L4 TCP 패스스루(`--tcp`)** 를 쓰기 때문이다.
+> serve의 HTTP 모드는 MagicDNS '이름'으로 vhost 라우팅해서 IP가 404가 되지만,
+> TCP 모드는 Host를 보지 않고 그대로 흘려보내 IP로도 접속된다. 또한 `serve`는
+> tailscaled를 거치므로 macOS 방화벽(스텔스)/유저스페이스 네트워킹 제약도 우회한다.
+> (일반 바인딩 소켓을 쓰는 raw 프록시는 이 제약 때문에 피어에게 닿지 않는다.)
 
 > OD를 재시작하면 내부 포트가 바뀌므로 `od-mobile up`을 다시 실행한다.
 > 노출 포트(`:8080`)와 접속 주소는 그대로 유지된다.
@@ -74,9 +75,9 @@ od-mobile off       # 노출 해제
 
 1. `pgrep -f web-sidecar\.mjs` 로 OD 웹 사이드카 PID를 찾는다.
 2. `lsof` 로 그 PID가 LISTEN 중인 로컬 포트를 알아낸다.
-3. `tailscale serve --bg --http=8080 http://127.0.0.1:<포트>` 로 노출한다
-   (`serve`는 tailscaled를 거치므로 방화벽/netstack 제약을 우회한다).
-4. `tailscale status --json` 의 `Self.DNSName` 으로 접속 주소를 만든다.
+3. `tailscale serve --bg --tcp=8080 tcp://127.0.0.1:<포트>` 로 노출한다
+   (L4 TCP라 IP 접속 가능, tailscaled 경유라 방화벽/netstack 우회).
+4. `tailscale status --json` 의 `Self.TailscaleIPs` / `Self.DNSName` 으로 접속 주소를 만든다.
 
 ## 배포 메모 (메인테이너용)
 

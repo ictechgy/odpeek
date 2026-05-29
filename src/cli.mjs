@@ -27,6 +27,7 @@ const HELP = `od-mobile — Open Design 웹 UI를 Tailscale tailnet에 노출해
 Commands:
   up        (기본) OD 포트를 감지해 tailnet에 노출
   off       노출 해제
+  ip        폰에서 열 주소(tailnet IP) 출력 — DNS 불필요, 권장
   url       폰에서 열 주소(MagicDNS 이름) 출력
   status    현재 serve 상태와 감지된 포트 출력
   doctor    환경 진단(tailscale / OD / MagicDNS)
@@ -37,8 +38,7 @@ Options:
   -h, --help         도움말
   -v, --version      버전
 
-참고: tailscale serve는 MagicDNS '이름'에만 응답하므로(IP 불가), 폰에서
-      Tailscale 앱의 "Use Tailscale DNS"를 켜고 이름 주소로 접속해야 한다.`;
+노출은 L4 TCP 패스스루(\`serve --tcp\`)라 IP로 바로 접속된다(폰 DNS 설정 무관).`;
 
 /**
  * argv를 옵션 객체로 파싱한다.
@@ -81,21 +81,28 @@ function cmdUp(opts) {
   const bin = requireTailscale();
   const { pid, port } = detectWebPort(opts.pattern);
   serveStart(bin, opts.port, port);
-  const dns = selfDnsName(statusJson(bin));
+  const status = statusJson(bin);
+  const ip = selfIp4(status);
+  const dns = selfDnsName(status);
   console.log(`OD 웹 UI(localhost:${port}, pid ${pid}) → tailnet 노출 완료.\n`);
-  if (dns) {
-    console.log(`  폰에서 열기:  http://${dns}:${opts.port}`);
-  } else {
-    console.log('  MagicDNS 이름을 확인하지 못했습니다. `od-mobile doctor`로 점검하세요.');
-  }
-  console.log('\n  ※ 폰 Tailscale 앱에서 "Use Tailscale DNS"가 켜져 있어야 이름이 풀립니다.');
-  console.log('  해제: od-mobile off');
+  if (ip) console.log(`  폰에서 열기:  http://${ip}:${opts.port}   ← DNS 불필요, 권장`);
+  if (dns) console.log(`  (이름으로도:  http://${dns}:${opts.port})`);
+  console.log('\n  해제: od-mobile off');
 }
 
 /** tailnet 노출을 해제한다. */
 function cmdOff(opts) {
   serveStop(requireTailscale(), opts.port);
   console.log('노출 해제됨.');
+}
+
+/** tailnet IP 기반 접속 주소를 출력한다(DNS 불필요). */
+function cmdIp(opts) {
+  const ip = selfIp4(statusJson(requireTailscale()));
+  if (!ip) {
+    throw new Error('tailnet IP를 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
+  }
+  console.log(`http://${ip}:${opts.port}`);
 }
 
 /** MagicDNS 이름 기반 접속 주소를 출력한다. */
@@ -152,6 +159,7 @@ function cmdDoctor(opts) {
 const COMMANDS = {
   up: cmdUp,
   off: cmdOff,
+  ip: cmdIp,
   url: cmdUrl,
   status: cmdStatus,
   doctor: cmdDoctor,
