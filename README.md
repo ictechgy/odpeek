@@ -41,13 +41,38 @@ brew install ictechgy/tap/od-mobile
 ## 사용법
 
 ```bash
-od-mobile up        # OD 포트를 감지해 tailnet에 노출 (기본 명령)
-od-mobile ip        # 폰에서 열 주소(tailnet IP) 출력 — DNS 불필요, 권장
-od-mobile url       # 폰에서 열 주소(MagicDNS 이름) 출력
-od-mobile status    # 현재 serve 상태 + 감지된 OD 포트
-od-mobile doctor    # 환경 진단(tailscale / OD / MagicDNS)
-od-mobile off       # 노출 해제
+od-mobile up        # OD를 tailnet에 노출 (Wi-Fi/사설망 권장)
+od-mobile tunnel    # OD를 Cloudflare 공개 HTTPS 터널로 노출 (셀룰러/어디서든, Basic 인증)
+od-mobile ip        # tailnet IP 접속 주소 출력
+od-mobile url       # MagicDNS 이름 접속 주소 출력
+od-mobile status    # 현재 노출 상태 + 감지된 OD 포트
+od-mobile doctor    # 환경 진단
+od-mobile off       # 모든 노출 해제 (serve + 터널)
 ```
+
+### 두 가지 노출 방식
+
+| 방식 | 명령 | 적합 상황 | 특징 |
+|------|------|----------|------|
+| **Tailscale serve** | `up` | Wi-Fi / 같은 사설망 | 비공개(tailnet 전용), 무료. 단 **셀룰러는 통신사 CGNAT(100.64/10) 충돌**로 막힐 수 있음 |
+| **Cloudflare 터널** | `tunnel` | 셀룰러 / 외부망 / 어디서든 | 공개 HTTPS URL, **Basic 인증 보호**. cloudflared가 localhost로 아웃바운드 연결 → 방화벽/CGNAT/DNS 모두 우회 |
+
+> **왜 셀룰러에서 `up`이 안 되나**: 한국 통신사(KT/SKT/LGU+)는 셀룰러에서 Tailscale과 동일한
+> `100.64.0.0/10` CGNAT 대역을 써서 라우팅이 충돌한다
+> ([Tailscale 공식 문서](https://tailscale.com/docs/reference/troubleshooting/network-configuration/cgnat-conflicts)).
+> 그래서 셀룰러에선 공개 터널(`tunnel`)이 가장 확실하다.
+
+### tunnel 모드 상세
+
+```bash
+od-mobile tunnel                 # 자동 생성된 비밀번호로 터널 기동
+OD_MOBILE_PASS=mypw od-mobile tunnel   # 고정 비밀번호 사용(브라우저가 기억 → 재입력 불필요)
+```
+
+- 전제: `brew install cloudflared`
+- 출력된 `https://...trycloudflare.com` URL과 아이디/비밀번호로 폰에서 접속
+- cloudflared → localhost 인증 프록시(Basic 인증) → OD 순서. 공개 URL이지만 인증으로 보호됨
+- 주의: 빠른 터널 URL은 **실행마다 바뀐다**. 고정 URL이 필요하면 Cloudflare 계정 + 도메인으로 named tunnel 구성
 
 ### 옵션
 

@@ -1,0 +1,4 @@
+claude r1: OK
+codex r1: OK
+agy r1: SKIP (hung/exit144)
+forge r1: EMPTY (reasoning only, hit tool-failure limit)
