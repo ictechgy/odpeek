@@ -1,6 +1,8 @@
 // od-mobile CLI 본체 — 명령 파싱과 각 동작 실행을 담당한다.
 import { readFileSync, openSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -37,6 +39,12 @@ const BIN_PATH = fileURLToPath(new URL('../bin/od-mobile.mjs', import.meta.url))
 const DEFAULT_PORT = Number(process.env.OD_MOBILE_PORT) || 8080;
 // 터널 모드에서 인증 프록시가 듣는 로컬 포트.
 const DEFAULT_AUTH_PORT = Number(process.env.OD_MOBILE_AUTH_PORT) || 8765;
+// 터널 유휴 자동 종료(분). 0이면 비활성. 노출 시간을 줄여 공격 표면을 축소한다.
+const DEFAULT_IDLE_MIN = process.env.OD_MOBILE_IDLE_MIN !== undefined
+  ? Number(process.env.OD_MOBILE_IDLE_MIN)
+  : 30;
+// 인증 시도 로그 경로.
+const AUTH_LOG = join(homedir(), '.od-mobile', 'auth.log');
 
 const HELP = `od-mobile — Open Design 웹 UI를 폰에서 보기 (Tailscale / Cloudflare 터널)
 
@@ -55,6 +63,7 @@ Commands:
 Options:
   -p, --port <n>     tailnet 노출 포트 (기본 ${DEFAULT_PORT}, env OD_MOBILE_PORT)
       --pattern <s>  OD 프로세스 매칭 패턴 (기본 ${DEFAULT_PATTERN})
+      --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env OD_MOBILE_IDLE_MIN)
   -h, --help         도움말
   -v, --version      버전
 
@@ -64,7 +73,13 @@ tunnel: cloudflared가 localhost로 아웃바운드 연결하므로 macOS 방화
 
 /** argv를 옵션 객체로 파싱한다. */
 function parseArgs(argv) {
-  const opts = { port: DEFAULT_PORT, pattern: DEFAULT_PATTERN, authPort: DEFAULT_AUTH_PORT, _: [] };
+  const opts = {
+    port: DEFAULT_PORT,
+    pattern: DEFAULT_PATTERN,
+    authPort: DEFAULT_AUTH_PORT,
+    idleMin: DEFAULT_IDLE_MIN,
+    _: [],
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '-p' || arg === '--port') {
@@ -75,6 +90,9 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === '--auth-port') {
       opts.authPort = Number(argv[i + 1]);
+      i += 1;
+    } else if (arg === '--idle') {
+      opts.idleMin = Number(argv[i + 1]);
       i += 1;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
@@ -158,14 +176,20 @@ async function cmdTunnel(opts) {
   const user = process.env.OD_MOBILE_USER || 'od';
   const pass = process.env.OD_MOBILE_PASS || randomBytes(9).toString('base64url');
 
+  const idleMs = Number.isFinite(opts.idleMin) && opts.idleMin > 0 ? opts.idleMin * 60000 : 0;
+
   stopRunningTunnel();
   ensureDir();
 
-  // 1) 인증 프록시(localhost) 기동 — 분리 프로세스.
+  // 1) 인증 프록시(localhost) 기동 — 분리 프로세스. (유휴 종료/로그 인자 포함)
   const proxyLog = openSync(`${CF_LOG}.proxy`, 'a');
   const proxy = spawn(
     process.execPath,
-    [BIN_PATH, '__authproxy', String(opts.authPort), String(targetPort), user, pass],
+    [
+      BIN_PATH, '__authproxy',
+      String(opts.authPort), String(targetPort), user, pass,
+      String(idleMs), AUTH_LOG,
+    ],
     { detached: true, stdio: ['ignore', proxyLog, proxyLog] },
   );
   proxy.unref();
@@ -209,14 +233,18 @@ async function cmdTunnel(opts) {
   console.log(`OD 웹 UI(localhost:${targetPort}) → Cloudflare 터널 노출 완료.\n`);
   console.log(`  폰에서 열기(셀룰러 OK):  ${url}`);
   console.log(`  로그인 — 아이디: ${user}   비밀번호: ${pass}\n`);
-  console.log('  ※ 공개 URL이지만 Basic 인증으로 보호됩니다. URL은 실행마다 바뀝니다.');
-  console.log('  해제: od-mobile off');
+  console.log('  ※ 공개 URL이지만 Basic 인증·무차별대입 잠금·보안 헤더로 보호됩니다.');
+  console.log(`  ※ ${idleMs ? `${opts.idleMin}분 유휴 시 자동 종료` : '유휴 자동종료 비활성'} · 시도 로그: ${AUTH_LOG}`);
+  console.log('  ※ URL은 실행마다 바뀝니다. 해제: od-mobile off');
 }
 
 /** (내부용) 분리 프로세스로 호출되어 Basic 인증 프록시를 돌린다. */
 function cmdAuthProxy(opts) {
-  const [, listenPort, targetPort, user, pass] = opts._;
-  runAuthProxy(Number(listenPort), Number(targetPort), user, pass);
+  const [, listenPort, targetPort, user, pass, idleMs, logFile] = opts._;
+  runAuthProxy(Number(listenPort), Number(targetPort), user, pass, {
+    idleMs: Number(idleMs) || 0,
+    logFile,
+  });
 }
 
 /** 모든 노출(serve + 터널)을 해제한다. */

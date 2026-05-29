@@ -74,6 +74,16 @@ OD_MOBILE_PASS=mypw od-mobile tunnel   # 고정 비밀번호 사용(브라우저
 - cloudflared → localhost 인증 프록시(Basic 인증) → OD 순서. 공개 URL이지만 인증으로 보호됨
 - 주의: 빠른 터널 URL은 **실행마다 바뀐다**. 고정 URL이 필요하면 Cloudflare 계정 + 도메인으로 named tunnel 구성
 
+#### tunnel 보안 하드닝 (자동 적용)
+
+- **무차별대입 잠금**: 실제 클라이언트 IP(`CF-Connecting-IP`) 기준 8회 실패 시 15분 차단(429)
+- **보안 헤더**: HSTS, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `X-Robots-Tag`
+- **시도 로그**: `~/.od-mobile/auth.log` (실패/잠금 기록, 비밀번호는 기록 안 함)
+- **유휴 자동 종료**: 기본 30분 무활동 시 터널+프록시 종료(`--idle <분>`, `0`=비활성)
+- 타이밍 안전 비교, 비밀번호 미설정 시 ~71비트 무작위 자동 생성
+
+더 강한 신원 기반 인증(Google/이메일 OTP, MFA, 감사 로그)은 **Cloudflare Access**(계정+도메인 필요)를 참고.
+
 ### 옵션
 
 | 옵션 | 설명 | 기본값 |
