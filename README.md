@@ -167,9 +167,9 @@ Environment variables: `ODPEEK_PORT`, `ODPEEK_AUTH_PORT`,
 
 ## 한국어
 
-> **비공식 도구.** `odpeek`은 Open Design 데스크톱 앱을 위한 **비공식 서드파티**
-> 도구로, Open Design과 제휴·보증 관계가 없다. **본인 컴퓨터에서 이미 실행 중인**
-> OD만 노출할 뿐이다.
+> **비공식 도구.** `odpeek`은 Open Design 데스크톱 앱을 위한 **서드파티** 도구로,
+> Open Design과 제휴·보증 관계가 없다. **본인 컴퓨터에서 이미 실행 중인** OD만
+> 노출할 뿐이다.
 
 Open Design(OD) 데스크톱 앱은 웹 UI를 `127.0.0.1`(로컬호스트)에만 띄우고, 그
 포트도 재시작할 때마다 랜덤으로 바뀐다. 그래서 폰에서 바로 볼 수 없다.
@@ -191,8 +191,8 @@ Open Design(OD) 데스크톱 앱은 웹 UI를 `127.0.0.1`(로컬호스트)에만
 | Node.js | >= 18 | >= 18 |
 | Open Design 데스크톱 앱 | 호스트에서 실행 중 | 호스트에서 실행 중 |
 | 추가 도구 | [Tailscale](https://tailscale.com/download) 설치 + 로그인 | [`cloudflared`](https://github.com/cloudflare/cloudflared) — macOS: `brew install cloudflared`; Linux: [설치 문서](https://pkg.cloudflare.com/index.html) |
-| 계정 | 무료 [Tailscale](https://tailscale.com/) 계정 — 맥과 폰이 **같은** tailnet에 로그인 | **불필요** — `trycloudflare` 빠른 터널은 **Cloudflare 계정 없이** 동작 |
-| 폰 쪽 | Tailscale 앱 설치 + 같은 계정 로그인 | 브라우저만 있으면 됨 (URL 열고 아이디·비밀번호 입력) |
+| 계정 | 무료 [Tailscale](https://tailscale.com/) 계정 — 맥과 폰에서 **같은** tailnet에 로그인 | **불필요** — `trycloudflare` 빠른 터널은 **Cloudflare 계정 없이** 동작 |
+| 폰 쪽 | Tailscale 앱 설치 + 같은 계정으로 로그인 | 브라우저만 있으면 됨 (URL 열고 아이디·비밀번호 입력) |
 
 > `odpeek` 자체는 **npm 의존성이 전혀 없다.** 위 도구들을 호출해 쓸 뿐이다.
 > **`odpeek doctor`** 로 전제 조건이 충족됐는지 점검할 수 있다.

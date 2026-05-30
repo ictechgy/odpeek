@@ -241,7 +241,7 @@
         <h1>od<span class="peek">peek</span>.</h1>
         <p class="tagline">
           <span class="en">See the <b>Open Design</b> on your desktop — from your phone. Privately over Tailscale, or anywhere through an authenticated Cloudflare tunnel.</span>
-          <span class="ko"><b>Open Design</b> 데스크톱 화면을 폰에서 본다. Tailscale로 사적으로, 또는 인증된 Cloudflare 터널로 어디서든.</span>
+          <span class="ko"><b>Open Design</b> 데스크톱 화면을 폰에서 본다. Tailscale로 비공개로, 또는 인증된 Cloudflare 터널로 어디서든.</span>
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#install">$ npm i -g odpeek</a>
@@ -276,7 +276,7 @@
     <h2><span class="en">Your localhost design, on the small screen.</span><span class="ko">로컬호스트의 디자인을, 작은 화면으로.</span></h2>
     <p class="lead">
       <span class="en">The Open Design (OD) desktop app serves its web UI on <code>127.0.0.1</code> only, and the port changes on every restart — so a phone can't reach it. <b>odpeek</b> auto-detects the live OD port and exposes it through one of two paths. It only ever exposes the OD running on <i>your own</i> machine.</span>
-      <span class="ko">Open Design(OD) 데스크톱 앱은 웹 UI를 <code>127.0.0.1</code>에만 띄우고 재시작마다 포트가 바뀌어 폰에서 닿을 수 없다. <b>odpeek</b>은 현재 OD 포트를 자동 감지해 두 방식 중 하나로 노출한다. 노출되는 건 오직 <i>본인 컴퓨터</i>의 OD뿐이다.</span>
+      <span class="ko">Open Design(OD) 데스크톱 앱은 웹 UI를 <code>127.0.0.1</code>에만 띄우고 재시작마다 포트가 바뀌어 폰에서 접속할 수 없다. <b>odpeek</b>은 현재 OD 포트를 자동 감지해 두 방식 중 하나로 노출한다. 노출되는 건 오직 <i>본인 컴퓨터</i>의 OD뿐이다.</span>
     </p>
 
     <div class="paths">
@@ -284,7 +284,7 @@
         <span class="strip"></span>
         <span class="tag">private · tailnet</span>
         <h3><code>up</code> — Tailscale</h3>
-        <p class="who"><span class="en">Visible to <b>your own devices only</b> (your phone on your tailnet). Never the public internet.</span><span class="ko"><b>내 기기에만</b> 보임(내 tailnet의 폰). 공개 인터넷에 안 열림.</span></p>
+        <p class="who"><span class="en">Visible to <b>your own devices only</b> (your phone on your tailnet). Never the public internet.</span><span class="ko"><b>내 기기에만</b> 보임(내 tailnet의 폰). 공개 인터넷에는 열리지 않음.</span></p>
         <ul>
           <li><span class="en">WireGuard-encrypted, free</span><span class="ko">WireGuard 암호화, 무료</span></li>
           <li><span class="en">Best on Wi-Fi / same private network</span><span class="ko">Wi-Fi·같은 사설망에서 최적</span></li>
@@ -295,7 +295,7 @@
         <span class="strip"></span>
         <span class="tag">public · authenticated</span>
         <h3><code>tunnel</code> — Cloudflare</h3>
-        <p class="who"><span class="en">A <b>public HTTPS URL guarded by Basic auth</b>. Reachable by anyone you hand the URL + password to.</span><span class="ko"><b>Basic 인증으로 보호된 공개 HTTPS URL</b>. URL+비번을 받은 사람만 접속.</span></p>
+        <p class="who"><span class="en">A <b>public HTTPS URL guarded by Basic auth</b>. Reachable by anyone you hand the URL + password to.</span><span class="ko"><b>Basic 인증으로 보호된 공개 HTTPS URL</b>. URL+비밀번호를 받은 사람만 접속.</span></p>
         <ul>
           <li><span class="en">Works on cellular / any network</span><span class="ko">셀룰러·어떤 망에서든 동작</span></li>
           <li><span class="en">Dials out to localhost → bypasses firewall / CGNAT / DNS</span><span class="ko">로컬호스트로 아웃바운드 → 방화벽·CGNAT·DNS 우회</span></li>
@@ -335,7 +335,7 @@
           <tr>
             <td><span class="en">On your phone</span><span class="ko">폰 쪽</span></td>
             <td><span class="en">Tailscale app + same account</span><span class="ko">Tailscale 앱 + 같은 계정</span></td>
-            <td><span class="en">just a browser (URL + user/password)</span><span class="ko">브라우저만 (URL + 아이디/비번)</span></td>
+            <td><span class="en">just a browser (URL + user/password)</span><span class="ko">브라우저만 (URL + 아이디·비밀번호)</span></td>
           </tr>
         </tbody>
       </table>
@@ -345,7 +345,7 @@
 
   <section id="install">
     <div class="sec-label"><span class="en">Install</span><span class="ko">설치</span></div>
-    <h2><span class="en">One line. Pick your channel.</span><span class="ko">한 줄이면 끝. 채널 선택.</span></h2>
+    <h2><span class="en">One line. Pick your channel.</span><span class="ko">한 줄이면 끝. 채널만 선택.</span></h2>
     <div class="code">
       <div class="head"><span>npm</span><button class="copy" data-copy="npm install -g odpeek">copy</button></div>
       <pre><span class="p">npm</span> install -g <span class="a">odpeek</span></pre>
@@ -377,25 +377,25 @@
   <section id="security">
     <div class="sec-label"><span class="en">Security</span><span class="ko">보안</span></div>
     <h2><span class="en">A public URL, hardened.</span><span class="ko">공개 URL, 단단하게.</span></h2>
-    <p class="lead"><span class="en">The <code>tunnel</code> URL is public, so the auth proxy ships hardened by default — but it's still a public exposure you should manage.</span><span class="ko"><code>tunnel</code> URL은 공개이므로 인증 프록시가 기본 하드닝돼 있다 — 그래도 공개 노출이니 사용자가 관리해야 한다.</span></p>
+    <p class="lead"><span class="en">The <code>tunnel</code> URL is public, so the auth proxy ships hardened by default — but it's still a public exposure you should manage.</span><span class="ko"><code>tunnel</code> URL은 공개되므로 인증 프록시가 기본으로 하드닝되어 있다. 그래도 공개 노출이므로 사용자가 직접 관리해야 한다.</span></p>
 
     <div class="hard-list">
       <div class="hard"><div class="k">brute-force lockout</div><div class="v"><span class="en">8 fails → 15-min block + global throttle</span><span class="ko">8회 실패 → 15분 차단 + 전역 스로틀</span></div></div>
-      <div class="hard"><div class="k">auth bypass</div><div class="v"><span class="en">WebSocket handshake verified before piping</span><span class="ko">파이프 전 WebSocket 핸드셰이크 검증</span></div></div>
+      <div class="hard"><div class="k">auth bypass</div><div class="v"><span class="en">WebSocket handshake verified before piping</span><span class="ko">파이프 연결 전 WebSocket 핸드셰이크 검증</span></div></div>
       <div class="hard"><div class="k">headers</div><div class="v"><span class="en">HSTS, nosniff, frame &amp; referrer policy; auth header stripped upstream</span><span class="ko">HSTS·nosniff·프레임/리퍼러 정책, 인증 헤더 미전달</span></div></div>
-      <div class="hard"><div class="k">credentials</div><div class="v"><span class="en">timing-safe compare; ~71-bit random default; passed via env not argv</span><span class="ko">타이밍 안전 비교, ~71비트 난수 기본, argv 대신 env 전달</span></div></div>
+      <div class="hard"><div class="k">credentials</div><div class="v"><span class="en">timing-safe compare; ~71-bit random default; passed via env not argv</span><span class="ko">타이밍 공격에 안전한 비교, ~71비트 난수 기본, argv 대신 env로 전달</span></div></div>
       <div class="hard"><div class="k">idle shutdown</div><div class="v"><span class="en">tunnel auto-closes after 30 min idle</span><span class="ko">30분 유휴 시 자동 종료</span></div></div>
-      <div class="hard"><div class="k">logs</div><div class="v"><span class="en">attempts logged to ~/.odpeek/auth.log (sanitized, never the password)</span><span class="ko">~/.odpeek/auth.log에 기록(살균, 비번 제외)</span></div></div>
+      <div class="hard"><div class="k">logs</div><div class="v"><span class="en">attempts logged to ~/.odpeek/auth.log (sanitized, never the password)</span><span class="ko">~/.odpeek/auth.log에 기록(제어문자 정리, 비밀번호 제외)</span></div></div>
     </div>
 
     <div class="notes">
       <div class="note warn">
         <h4>⚠ <span class="en">The tunnel URL is public</span><span class="ko">터널 URL은 공개</span></h4>
-        <p><span class="en">Run <code>odpeek off</code> when you're done, and be mindful of exposing sensitive designs. Don't share the URL + password loosely.</span><span class="ko">다 봤으면 <code>odpeek off</code>, 민감한 디자인 노출에 주의. URL+비번을 함부로 공유하지 말 것.</span></p>
+        <p><span class="en">Run <code>odpeek off</code> when you're done, and be mindful of exposing sensitive designs. Don't share the URL + password loosely.</span><span class="ko">사용을 마쳤으면 <code>odpeek off</code>. 민감한 디자인 노출에 주의. URL+비밀번호를 함부로 공유하지 말 것.</span></p>
       </div>
       <div class="note good">
         <h4>✓ <span class="en">No inbound needed</span><span class="ko">인바운드 불필요</span></h4>
-        <p><span class="en">If macOS asks "Allow incoming connections for node?", you can Deny — the design relies on loopback + outbound.</span><span class="ko">macOS가 "node 인바운드 허용?"을 물으면 거부해도 된다 — 설계가 루프백+아웃바운드 기반이다.</span></p>
+        <p><span class="en">If macOS asks "Allow incoming connections for node?", you can Deny — the design relies on loopback + outbound.</span><span class="ko">macOS가 "node 인바운드 허용?"을 물으면 거부해도 된다. 루프백+아웃바운드 기반 설계이다.</span></p>
       </div>
     </div>
   </section>
