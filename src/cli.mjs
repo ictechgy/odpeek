@@ -1,5 +1,5 @@
 // od-mobile CLI 본체 — 명령 파싱과 각 동작 실행을 담당한다.
-import { readFileSync, openSync } from 'node:fs';
+import { readFileSync, openSync, closeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +24,7 @@ import {
   readTunnel,
   clearTunnel,
   isAlive,
+  processMatches,
   extractTrycloudflareUrl,
 } from './tunnel.mjs';
 
@@ -105,6 +106,25 @@ function parseArgs(argv) {
   return opts;
 }
 
+/**
+ * 포트·유휴 옵션이 유효 범위인지 검증한다.
+ * 잘못된 값(NaN/0/음수/범위 초과)이 listen·터널 인자로 무음 전파되어 인증 프록시
+ * 우회나 진단 불가 실패로 이어지는 것을 막는다.
+ */
+function assertValidOpts(opts) {
+  for (const [name, value] of [['--port', opts.port], ['--auth-port', opts.authPort]]) {
+    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+      throw new Error(`${name} 값이 올바르지 않습니다. 1~65535 정수여야 합니다: ${value}`);
+    }
+  }
+  if (opts.port === opts.authPort) {
+    throw new Error(`--port와 --auth-port는 서로 달라야 합니다: ${opts.port}`);
+  }
+  if (!Number.isFinite(opts.idleMin) || opts.idleMin < 0) {
+    throw new Error(`--idle 값이 올바르지 않습니다. 0 이상이어야 합니다: ${opts.idleMin}`);
+  }
+}
+
 /** tailscale 바이너리를 확보하거나 설치 안내 에러를 던진다. */
 function requireTailscale() {
   const bin = resolveTailscaleBin();
@@ -116,9 +136,12 @@ function requireTailscale() {
   return bin;
 }
 
-/** cloudflared 실행 파일 경로를 찾는다. 없으면 null. */
+/**
+ * cloudflared 실행 파일 경로를 찾는다. 없으면 null.
+ * 신뢰 가능한 절대 경로를 먼저 시도하고, 마지막에 PATH를 본다(PATH 하이재킹 완화).
+ */
 function resolveCloudflared() {
-  for (const candidate of ['cloudflared', '/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared']) {
+  for (const candidate of ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared', 'cloudflared']) {
     try {
       execFileSync(candidate, ['--version'], { stdio: 'ignore' });
       return candidate;
@@ -148,8 +171,13 @@ function cmdUp(opts) {
 function stopRunningTunnel() {
   const state = readTunnel();
   if (state) {
-    for (const pid of [state.cfPid, state.proxyPid]) {
-      if (pid && isAlive(pid)) {
+    // PID 재사용으로 무관한 프로세스를 죽이지 않도록 명령줄 시그니처를 확인한다.
+    const targets = [
+      { pid: state.proxyPid, needle: '__authproxy' },
+      { pid: state.cfPid, needle: 'cloudflared' },
+    ];
+    for (const { pid, needle } of targets) {
+      if (pid && isAlive(pid) && processMatches(pid, needle)) {
         try {
           process.kill(pid);
         } catch {
@@ -182,17 +210,24 @@ async function cmdTunnel(opts) {
   ensureDir();
 
   // 1) 인증 프록시(localhost) 기동 — 분리 프로세스. (유휴 종료/로그 인자 포함)
+  // 자격증명(user/pass)은 argv 대신 환경변수로 넘긴다. argv는 `ps`/`/proc`로 같은
+  // 머신의 다른 사용자에게 노출되지만, 환경변수는 프로세스 소유자만 읽을 수 있다.
   const proxyLog = openSync(`${CF_LOG}.proxy`, 'a');
   const proxy = spawn(
     process.execPath,
     [
       BIN_PATH, '__authproxy',
-      String(opts.authPort), String(targetPort), user, pass,
+      String(opts.authPort), String(targetPort),
       String(idleMs), AUTH_LOG,
     ],
-    { detached: true, stdio: ['ignore', proxyLog, proxyLog] },
+    {
+      detached: true,
+      stdio: ['ignore', proxyLog, proxyLog],
+      env: { ...process.env, OD_MOBILE_USER: user, OD_MOBILE_PASS: pass },
+    },
   );
   proxy.unref();
+  closeSync(proxyLog); // 자식이 fd를 복제했으므로 부모 측 원본은 닫는다(누수 방지)
   await sleep(400); // 프록시 listen 대기
 
   // 2) cloudflared 빠른 터널 기동 — 인증 프록시로 연결.
@@ -203,6 +238,7 @@ async function cmdTunnel(opts) {
     { detached: true, stdio: ['ignore', cfLogFd, cfLogFd] },
   );
   cf.unref();
+  closeSync(cfLogFd); // 부모 측 fd 닫기(자식이 복제 보유)
 
   // 3) 로그에서 공개 URL 폴링(최대 ~30초).
   let url = null;
@@ -240,7 +276,10 @@ async function cmdTunnel(opts) {
 
 /** (내부용) 분리 프로세스로 호출되어 Basic 인증 프록시를 돌린다. */
 function cmdAuthProxy(opts) {
-  const [, listenPort, targetPort, user, pass, idleMs, logFile] = opts._;
+  const [, listenPort, targetPort, idleMs, logFile] = opts._;
+  // 자격증명은 argv가 아닌 환경변수로 전달받는다(부모가 spawn env로 주입).
+  const user = process.env.OD_MOBILE_USER || 'od';
+  const pass = process.env.OD_MOBILE_PASS || '';
   runAuthProxy(Number(listenPort), Number(targetPort), user, pass, {
     idleMs: Number(idleMs) || 0,
     logFile,
@@ -359,6 +398,10 @@ export async function main(argv) {
   const handler = COMMANDS[command];
   if (!handler) {
     throw new Error(`알 수 없는 명령: ${command}\n\n${HELP}`);
+  }
+  // 내부 프록시 호출(__authproxy)은 위치 인자로 포트를 받으므로 옵션 검증에서 제외한다.
+  if (command !== '__authproxy') {
+    assertValidOpts(opts);
   }
   await handler(opts);
 }
