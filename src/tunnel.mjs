@@ -102,7 +102,8 @@ export function isAlive(pid) {
 export function processMatches(pid, needle) {
   if (!isPositiveInt(pid) || !needle) return false;
   try {
-    const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+    // -ww: 명령줄을 절단 없이 전부 출력(긴 BIN_PATH 뒤의 needle이 잘리지 않게).
+    const command = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], {
       encoding: 'utf8',
     });
     return command.includes(needle);
