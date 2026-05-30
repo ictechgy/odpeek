@@ -167,35 +167,36 @@ Environment variables: `ODPEEK_PORT`, `ODPEEK_AUTH_PORT`,
 
 ## 한국어
 
-> **비공식 도구.** `odpeek`은 Open Design 데스크톱 앱을 위한 **서드파티** 도구로,
-> Open Design과 제휴·보증 관계가 없다. **본인 컴퓨터에서 이미 실행 중인** OD만
-> 노출할 뿐이다.
+> **비공식 도구입니다.** `odpeek`은 Open Design 데스크톱 앱을 폰에서 보기 위한
+> 서드파티 도구로, Open Design과는 아무런 제휴·보증 관계가 없습니다. 노출되는 건
+> 본인 컴퓨터에서 이미 돌고 있는 OD뿐입니다.
 
-Open Design(OD) 데스크톱 앱은 웹 UI를 `127.0.0.1`(로컬호스트)에만 띄우고, 그
-포트도 재시작할 때마다 랜덤으로 바뀐다. 그래서 폰에서 바로 볼 수 없다.
-`odpeek`은 현재 OD 웹 포트를 자동 감지해 두 가지 방식 중 하나로 노출한다.
+Open Design(OD) 데스크톱 앱은 웹 UI를 로컬호스트(`127.0.0.1`)에만 띄우는 데다, 그
+포트마저 켤 때마다 바뀝니다. 그래서 폰에서는 바로 열 수 없죠. `odpeek`은 지금 떠
+있는 OD 포트를 자동으로 찾아 두 가지 방법 중 하나로 폰에 띄워 줍니다.
 
 - **`up`** — [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve)
-  로 **내 tailnet 기기(폰/패드)에만** 노출한다. 공개 인터넷이 아니며 트래픽은
-  Tailscale의 WireGuard로 암호화된다. Wi‑Fi나 같은 사설망에서 쓰기 좋다.
+  로 **내 tailnet 기기(폰·태블릿)에만** 띄웁니다. 공개 인터넷에는 열리지 않고,
+  트래픽은 Tailscale의 WireGuard로 암호화됩니다. Wi‑Fi나 같은 사설망에서 쓰기
+  좋습니다.
 - **`tunnel`** — [Cloudflare 빠른 터널](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
-  로 **HTTP Basic 인증으로 보호되는 공개 HTTPS URL**을 만든다. `cloudflared`가
-  로컬호스트로 *아웃바운드* 연결을 열기 때문에 macOS 방화벽·CGNAT·DNS 문제를
-  모두 우회한다. **셀룰러 등 어떤 망에서든** 안정적으로 동작하는 방식이다.
+  로 **HTTP Basic 인증이 걸린 공개 HTTPS URL**을 만듭니다. `cloudflared`가 안쪽으로
+  들어오는 연결을 받는 대신 바깥으로 연결을 거는 방식이라, macOS 방화벽·CGNAT·DNS
+  문제를 모두 비켜 갑니다. 셀룰러를 비롯해 어떤 망에서도 안정적으로 동작합니다.
 
 ### 요구 사항
 
 | | `up` (Tailscale) | `tunnel` (Cloudflare) |
 |---|---|---|
-| 호스트 OS | macOS 또는 Linux (포트 감지에 `lsof`/`pgrep` 사용) | macOS 또는 Linux |
+| 호스트 OS | macOS 또는 Linux (포트 감지에 `lsof`·`pgrep` 사용) | macOS 또는 Linux |
 | Node.js | >= 18 | >= 18 |
 | Open Design 데스크톱 앱 | 호스트에서 실행 중 | 호스트에서 실행 중 |
-| 추가 도구 | [Tailscale](https://tailscale.com/download) 설치 + 로그인 | [`cloudflared`](https://github.com/cloudflare/cloudflared) — macOS: `brew install cloudflared`; Linux: [설치 문서](https://pkg.cloudflare.com/index.html) |
-| 계정 | 무료 [Tailscale](https://tailscale.com/) 계정 — 맥과 폰에서 **같은** tailnet에 로그인 | **불필요** — `trycloudflare` 빠른 터널은 **Cloudflare 계정 없이** 동작 |
-| 폰 쪽 | Tailscale 앱 설치 + 같은 계정으로 로그인 | 브라우저만 있으면 됨 (URL 열고 아이디·비밀번호 입력) |
+| 추가 도구 | [Tailscale](https://tailscale.com/download) 설치 후 로그인 | [`cloudflared`](https://github.com/cloudflare/cloudflared) — macOS는 `brew install cloudflared`, Linux는 [설치 문서](https://pkg.cloudflare.com/index.html) 참고 |
+| 계정 | 무료 [Tailscale](https://tailscale.com/) 계정 (맥과 폰이 **같은** tailnet에 로그인) | **필요 없음** — `trycloudflare` 빠른 터널은 Cloudflare 계정 없이 됩니다 |
+| 폰 쪽 | Tailscale 앱 설치 후 같은 계정으로 로그인 | 브라우저만 있으면 됩니다 (URL을 열고 아이디·비밀번호 입력) |
 
-> `odpeek` 자체는 **npm 의존성이 전혀 없다.** 위 도구들을 호출해 쓸 뿐이다.
-> **`odpeek doctor`** 로 전제 조건이 충족됐는지 점검할 수 있다.
+> `odpeek`은 그 자체로 **npm 의존성이 하나도 없습니다.** 위 도구들을 불러다 쓸
+> 뿐이에요. 전제 조건이 갖춰졌는지는 **`odpeek doctor`** 로 확인할 수 있습니다.
 
 ### 설치
 
@@ -208,7 +209,7 @@ brew install ictechgy/tap/odpeek
 ```
 
 **Claude Code 플러그인** — 이 저장소를 플러그인 마켓플레이스로 추가하면
-`odpeek` 스킬을 쓸 수 있다.
+`odpeek` 스킬을 쓸 수 있습니다.
 
 ```
 /plugin marketplace add ictechgy/odpeek
@@ -218,11 +219,11 @@ brew install ictechgy/tap/odpeek
 ### 사용법
 
 ```bash
-odpeek up        # OD를 tailnet에 노출 (Wi-Fi/사설망 권장)
-odpeek tunnel    # OD를 Cloudflare 공개 HTTPS 터널로 노출 (셀룰러/어디서든, Basic 인증)
+odpeek up        # OD를 내 tailnet에 노출 (Wi-Fi·사설망에 적합)
+odpeek tunnel    # OD를 Cloudflare 공개 HTTPS 터널로 노출 (셀룰러 등 어디서나, Basic 인증)
 odpeek ip        # tailnet IP 접속 주소 출력
 odpeek url       # MagicDNS 이름 접속 주소 출력
-odpeek status    # 현재 노출 상태 + 감지된 OD 포트
+odpeek status    # 현재 노출 상태와 감지된 OD 포트 표시
 odpeek doctor    # 환경 진단
 odpeek off       # 모든 노출 해제 (serve + 터널)
 ```
@@ -231,101 +232,101 @@ odpeek off       # 모든 노출 해제 (serve + 터널)
 
 | 방식 | 명령 | 적합한 상황 | 특징 |
 |------|------|------------|------|
-| **Tailscale serve** | `up` | Wi-Fi / 같은 사설망 | 비공개(tailnet 전용), 무료. 단 **셀룰러는 통신사 CGNAT(100.64/10) 충돌**로 막힐 수 있음 |
-| **Cloudflare 터널** | `tunnel` | 셀룰러 / 외부망 / 어디서든 | 공개 HTTPS URL, **Basic 인증 보호**. cloudflared가 로컬호스트로 아웃바운드 연결 → 방화벽·CGNAT·DNS 모두 우회 |
+| **Tailscale serve** | `up` | Wi-Fi·같은 사설망 | tailnet 전용이라 비공개, 무료. 단 **셀룰러에서는 통신사 CGNAT(100.64/10)와 충돌**해 막힐 수 있음 |
+| **Cloudflare 터널** | `tunnel` | 셀룰러·외부망 등 어디서나 | 공개 HTTPS URL이지만 **Basic 인증으로 보호**. cloudflared가 바깥으로 연결을 열어 방화벽·CGNAT·DNS를 모두 우회 |
 
-> **셀룰러에서 `up`이 안 되는 이유:** 한국 통신사(KT/SKT/LGU+)는 셀룰러에서
-> Tailscale과 동일한 `100.64.0.0/10` CGNAT 대역을 써서 라우팅이 충돌한다
+> **셀룰러에서 `up`이 막히는 이유:** 한국 통신사(KT·SKT·LGU+)는 셀룰러에서
+> Tailscale과 똑같은 `100.64.0.0/10`(CGNAT) 대역을 쓰기 때문에 경로가 충돌합니다
 > ([Tailscale 공식 문서](https://tailscale.com/docs/reference/troubleshooting/network-configuration/cgnat-conflicts)).
-> 그래서 셀룰러에선 공개 터널(`tunnel`)이 가장 확실하다.
+> 그래서 셀룰러에서는 공개 터널(`tunnel`)이 가장 확실합니다.
 
 #### tunnel 모드 상세
 
 ```bash
-odpeek tunnel                       # 자동 생성된 비밀번호로 터널 시작
-ODPEEK_PASS=mypw odpeek tunnel   # 고정 비밀번호 사용 (브라우저가 기억 → 재입력 불필요)
+odpeek tunnel                       # 비밀번호를 자동 생성해 터널 시작
+ODPEEK_PASS=mypw odpeek tunnel   # 비밀번호 고정 (브라우저가 기억 → 재입력 불필요)
 ```
 
-- `cloudflared`가 필요하다 (macOS: `brew install cloudflared`, Linux: [설치
-  문서](https://pkg.cloudflare.com/index.html)).
-- 빠른 터널은 **Cloudflare 계정이 필요 없다.** 계정+도메인은 *고정* named tunnel이나
-  Cloudflare Access(아래)를 쓸 때만 필요하다.
-- 출력된 `https://...trycloudflare.com` URL을 폰에서 열고, 표시된
-  아이디·비밀번호로 로그인한다.
-- 연결 순서: `cloudflared` → 로컬호스트 인증 프록시(Basic 인증) → OD. 공개
-  URL이지만 인증으로 보호된다.
-- 빠른 터널 URL은 **실행할 때마다 바뀐다.** 고정 URL이 필요하면 Cloudflare 계정
-  + 도메인으로 named tunnel을 구성한다.
+- `cloudflared`가 있어야 합니다 (macOS는 `brew install cloudflared`, Linux는 [설치
+  문서](https://pkg.cloudflare.com/index.html) 참고).
+- 빠른 터널은 **Cloudflare 계정이 필요 없습니다.** 계정과 도메인은 *고정* 주소(named
+  tunnel)나 Cloudflare Access(아래)를 쓸 때만 있으면 됩니다.
+- 출력된 `https://...trycloudflare.com` 주소를 폰에서 열고, 화면에 표시된
+  아이디·비밀번호로 로그인하면 됩니다.
+- 연결 경로는 `cloudflared` → 로컬호스트 인증 프록시(Basic 인증) → OD 순서입니다.
+  주소는 공개돼 있지만 인증으로 막혀 있습니다.
+- 빠른 터널 주소는 **실행할 때마다 바뀝니다.** 고정 주소가 필요하면 Cloudflare
+  계정과 도메인으로 named tunnel을 만들면 됩니다.
 
 ##### tunnel 보안 하드닝 (자동 적용)
 
-- **무차별 대입 잠금:** 실제 클라이언트 IP(`CF-Connecting-IP`) 기준 8회 실패 시
-  15분 차단(HTTP 429).
+- **무차별 대입 차단:** 같은 클라이언트 IP(`CF-Connecting-IP` 기준)가 8번 실패하면
+  15분 동안 막습니다(HTTP 429).
 - **보안 헤더:** HSTS, `X-Content-Type-Options`, `X-Frame-Options`,
-  `Referrer-Policy`, `X-Robots-Tag`.
-- **시도 로그:** `~/.odpeek/auth.log` (실패·잠금만 기록하고 비밀번호는 남기지
-  않는다).
-- **유휴 자동 종료:** 기본 30분 동안 활동이 없으면 터널과 프록시를 종료한다
-  (`--idle <분>`, `0`이면 비활성).
-- 타이밍 공격에 안전한(timing-safe) 비교를 사용하며, 비밀번호를 지정하지 않으면
-  약 71비트 난수로 자동 생성한다.
+  `Referrer-Policy`, `X-Robots-Tag`를 붙입니다.
+- **시도 기록:** 실패와 잠금만 `~/.odpeek/auth.log`에 남기며, 비밀번호는 절대
+  기록하지 않습니다.
+- **유휴 시 자동 종료:** 기본값으로 30분 동안 아무 활동이 없으면 터널과 프록시를
+  내립니다(`--idle <분>`, `0`이면 끔).
+- 자격 비교에는 타이밍 공격에 안전한(timing-safe) 방식을 쓰고, 비밀번호를 따로
+  지정하지 않으면 약 71비트짜리 난수로 자동 생성합니다.
 
-더 강한 신원 기반 인증(Google·이메일 OTP, MFA, 감사 로그)이 필요하면
+신원 기반의 더 강력한 인증(Google·이메일 OTP, MFA, 감사 로그)이 필요하면
 [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
-를 참고한다 (계정 + 도메인 필요).
+를 참고하세요 (계정과 도메인이 필요합니다).
 
 ### 옵션
 
 | 옵션 | 설명 | 기본값 |
 |------|------|--------|
-| `-p, --port <n>` | tailnet 노출 포트 | `8080` (env `ODPEEK_PORT`) |
+| `-p, --port <n>` | tailnet 노출 포트 | `8080` (환경변수 `ODPEEK_PORT`) |
 | `--pattern <s>` | OD 프로세스 매칭 패턴 | `web-sidecar\.mjs` |
-| `--idle <min>` | 터널 유휴 자동 종료 (분, `0`=비활성) | `30` (env `ODPEEK_IDLE_MIN`) |
+| `--idle <min>` | 터널 유휴 자동 종료 시간 (분, `0`이면 끔) | `30` (환경변수 `ODPEEK_IDLE_MIN`) |
 
 환경 변수: `ODPEEK_PORT`, `ODPEEK_AUTH_PORT`, `ODPEEK_IDLE_MIN`,
-`ODPEEK_USER`(기본 `od`), `ODPEEK_PASS`.
+`ODPEEK_USER`(기본값 `od`), `ODPEEK_PASS`.
 
 ### 폰에서 보기 (Tailscale 방식)
 
-1. 맥에서 `odpeek up`을 실행한다.
-2. 폰의 Tailscale이 켜진 상태에서 출력된 **IP 주소**(`http://100.x.y.z:8080`)를
-   폰 브라우저에서 연다 — **MagicDNS 설정과 무관하게 동작한다.**
+1. 맥에서 `odpeek up`을 실행합니다.
+2. 폰에서 Tailscale을 켠 채로, 출력된 **IP 주소**(`http://100.x.y.z:8080`)를 폰
+   브라우저에서 엽니다 — **MagicDNS 설정과 상관없이 됩니다.**
 
 > **IP로 접속되는 이유:** 노출에 serve의 **L4 TCP 패스스루(`--tcp`)** 를 쓰기
-> 때문이다. serve의 HTTP 모드는 MagicDNS '이름'으로 vhost 라우팅을 해서 IP로는
-> 404가 나지만, TCP 모드는 Host 헤더를 보지 않고 그대로 전달하므로 IP로도
-> 접속된다. 또 `serve`는 tailscaled를 거치므로 macOS 방화벽(스텔스)과 유저스페이스
-> 네트워킹 제약도 우회한다. (일반 바인딩 소켓을 쓰는 raw 프록시는 이 제약 때문에
-> 피어에 도달하지 못한다.)
+> 때문입니다. serve의 HTTP 모드는 MagicDNS '이름'으로 가상 호스트 라우팅을 하기
+> 때문에 IP로 들어오면 404가 나지만, TCP 모드는 Host 헤더를 보지 않고 그대로
+> 넘겨주므로 IP로도 접속됩니다. 게다가 `serve`는 tailscaled를 거치므로 macOS
+> 방화벽(스텔스)과 유저스페이스 네트워킹 제약까지 함께 비켜 갑니다. (보통 방식으로
+> 바인딩한 소켓을 쓰는 raw 프록시는 이 제약 때문에 상대 기기에 닿지 못합니다.)
 
-> OD를 재시작하면 내부 포트가 바뀌므로 `odpeek up`을 다시 실행한다. 노출
-> 포트(`:8080`)와 접속 주소는 그대로 유지된다.
+> OD를 다시 켜면 내부 포트가 바뀌니 `odpeek up`을 한 번 더 실행하면 됩니다. 노출
+> 포트(`:8080`)와 접속 주소는 그대로 유지됩니다.
 
 ### 동작 원리
 
-1. `pgrep -f web-sidecar\.mjs`로 OD 웹 사이드카 PID를 찾는다.
-2. `lsof`로 그 PID가 LISTEN 중인 로컬 포트를 알아낸다.
-3. `tailscale serve --bg --tcp=8080 tcp://127.0.0.1:<포트>`로 노출한다 (L4
-   TCP라 IP 접속 가능, tailscaled 경유라 방화벽·netstack 우회).
-4. `tailscale status --json`의 `Self.TailscaleIPs` / `Self.DNSName`으로 접속
-   주소를 만든다.
+1. `pgrep -f web-sidecar\.mjs`로 OD 웹 사이드카의 PID를 찾습니다.
+2. `lsof`로 그 PID가 LISTEN 중인 로컬 포트를 알아냅니다.
+3. `tailscale serve --bg --tcp=8080 tcp://127.0.0.1:<포트>`로 노출합니다 (L4
+   TCP라 IP로 접속할 수 있고, tailscaled를 거치므로 방화벽·netstack을 우회합니다).
+4. `tailscale status --json`의 `Self.TailscaleIPs`·`Self.DNSName`으로 접속
+   주소를 만듭니다.
 
 ### 보안 주의
 
-- `tunnel` URL은 **공개**이다. 사용을 마쳤으면 `odpeek off`를 실행하는 습관을
-  들이고, 민감한 디자인 노출에 주의한다.
+- `tunnel` 주소는 **공개**입니다. 다 보고 나면 `odpeek off`를 실행하는 습관을
+  들이고, 민감한 디자인이 노출되지 않도록 주의하세요.
 - macOS가 "node의 인바운드 연결을 허용하시겠습니까?"라고 물으면 **거부(Deny)** 해도
-  된다. 최종 설계는 루프백 + 아웃바운드 기반이라 인바운드 허용이 필요 없다.
+  됩니다. 최종 설계가 루프백과 아웃바운드만 쓰기 때문에 인바운드를 열 필요가 없습니다.
 
 ---
 
 ## 배포 메모 (메인테이너용 / Maintainer notes)
 
 - **npm:** `npm publish`
-- **Homebrew:** `npm publish` 후 `Formula/odpeek.rb`의 `sha256`을
-  `curl -sL <tarball> | shasum -a 256` 값으로 교체한 뒤 tap 저장소에 올린다.
-- **Claude 플러그인:** `.claude-plugin/plugin.json`과 `skills/`가 저장소에
-  포함되어 있다.
+- **Homebrew:** `npm publish` 뒤에 `Formula/odpeek.rb`의 `sha256`을
+  `curl -sL <tarball> | shasum -a 256` 값으로 바꾸고 tap 저장소에 올립니다.
+- **Claude 플러그인:** `.claude-plugin/plugin.json`과 `skills/`가 저장소에 들어
+  있습니다.
 
 ## 라이선스 / License
 
