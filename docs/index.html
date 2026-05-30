@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en" class="lang-en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>odpeek — view Open Design on your phone</title>
+<meta name="description" content="A tiny zero-dependency CLI that exposes the Open Design desktop web UI to your phone over Tailscale or a Cloudflare tunnel." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=JetBrains+Mono:wght@400;500;700&family=Spline+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --ink: #0b0d12;
+    --ink-2: #11141c;
+    --panel: #151926;
+    --panel-2: #1b2031;
+    --line: #262c3e;
+    --fg: #e8eaf0;
+    --fg-dim: #9aa2b8;
+    --fg-faint: #6b7390;
+    --amber: #ffb454;
+    --amber-soft: #ffcf8a;
+    --teal: #5be1c4;
+    --violet: #9a8cff;
+    --danger: #ff7a7a;
+    --radius: 16px;
+    --maxw: 1080px;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --display: "Bricolage Grotesque", Georgia, serif;
+    --body: "Spline Sans", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--fg);
+    font-family: var(--body);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* blueprint grid + amber glow atmosphere */
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 44px 44px;
+    opacity: 0.22;
+    mask-image: radial-gradient(ellipse 120% 80% at 50% 0%, #000 30%, transparent 78%);
+    pointer-events: none; z-index: 0;
+  }
+  body::after {
+    content: "";
+    position: fixed; top: -25vh; left: 50%; transform: translateX(-50%);
+    width: 90vw; height: 70vh;
+    background: radial-gradient(ellipse at center, rgba(255,180,84,0.16), transparent 62%);
+    filter: blur(20px);
+    pointer-events: none; z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  /* language visibility */
+  .ko { display: none; }
+  html.lang-ko .ko { display: revert; }
+  html.lang-ko .en { display: none; }
+  html.lang-ko body { --body: "Spline Sans", "Apple SD Gothic Neo", "Pretendard", system-ui, sans-serif; }
+
+  /* nav */
+  nav {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 24px;
+    backdrop-filter: blur(12px);
+    background: rgba(11,13,18,0.72);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-weight: 700; letter-spacing: -0.02em; }
+  .brand .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 14px var(--amber); animation: pulse 2.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{ transform: scale(1); opacity:1;} 50%{ transform: scale(0.7); opacity:0.55;} }
+  .nav-links { display: flex; align-items: center; gap: 22px; }
+  .nav-links a { color: var(--fg-dim); text-decoration: none; font-size: 14px; font-family: var(--mono); transition: color .2s; }
+  .nav-links a:hover { color: var(--amber-soft); }
+  .lang-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; font-family: var(--mono); font-size: 12px; }
+  .lang-toggle button { background: transparent; border: 0; color: var(--fg-dim); padding: 6px 12px; cursor: pointer; transition: all .2s; }
+  .lang-toggle button.active { background: var(--amber); color: #2a1c05; font-weight: 700; }
+  @media (max-width: 720px){ .nav-links .hide-sm { display:none; } }
+
+  /* hero */
+  header.hero { padding: 92px 0 64px; }
+  .eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--amber); margin-bottom: 22px; }
+  h1 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(46px, 9vw, 104px); line-height: 0.95; letter-spacing: -0.035em;
+    margin: 0 0 10px;
+  }
+  h1 .peek { color: var(--amber); font-style: italic; position: relative; }
+  .tagline { font-size: clamp(18px, 2.4vw, 24px); color: var(--fg-dim); max-width: 30ch; margin: 18px 0 0; }
+  .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 40px; align-items: center; }
+  @media (max-width: 860px){ .hero-grid { grid-template-columns: 1fr; } }
+
+  .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }
+  .btn { font-family: var(--mono); font-size: 14px; font-weight: 500; text-decoration: none; padding: 13px 20px; border-radius: 12px; transition: transform .15s, box-shadow .2s; display:inline-flex; align-items:center; gap:8px; }
+  .btn-primary { background: var(--amber); color: #2a1c05; font-weight: 700; box-shadow: 0 8px 30px rgba(255,180,84,0.28); }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(255,180,84,0.4); }
+  .btn-ghost { color: var(--fg); border: 1px solid var(--line); background: var(--panel); }
+  .btn-ghost:hover { border-color: var(--amber); color: var(--amber-soft); transform: translateY(-2px); }
+
+  .badges { display:flex; gap: 10px; flex-wrap: wrap; margin-top: 26px; }
+  .badge { font-family: var(--mono); font-size: 12px; color: var(--fg-dim); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; background: rgba(255,255,255,0.02); }
+  .badge b { color: var(--teal); }
+
+  /* phone mock */
+  .phone-stage { position: relative; display:flex; justify-content:center; }
+  .phone {
+    width: 240px; height: 480px; border-radius: 38px; background: linear-gradient(160deg, #1c2233, #0e1119);
+    border: 1px solid var(--line); padding: 14px; position: relative;
+    box-shadow: 0 40px 80px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(255,255,255,0.03);
+    animation: float 6s ease-in-out infinite;
+  }
+  @keyframes float { 0%,100%{ transform: translateY(0) rotate(-2deg);} 50%{ transform: translateY(-14px) rotate(-2deg);} }
+  .phone .notch { position:absolute; top:14px; left:50%; transform:translateX(-50%); width:90px; height:20px; background:#05070c; border-radius:0 0 14px 14px; }
+  .phone .screen { height:100%; border-radius: 26px; background: radial-gradient(circle at 50% 18%, rgba(255,180,84,0.18), transparent 60%), #0a0d14; overflow:hidden; position:relative; border:1px solid #20283c; }
+  .phone .bar { font-family: var(--mono); font-size: 9px; color: var(--fg-faint); display:flex; justify-content:space-between; padding: 24px 16px 8px; }
+  .phone .art { padding: 8px 16px; }
+  .phone .art .row { height: 9px; border-radius: 4px; background: linear-gradient(90deg,#2a3450,#1a2033); margin: 10px 0; }
+  .phone .art .row.w1{ width:70%; } .phone .art .row.w2{ width:90%; } .phone .art .row.w3{ width:50%; }
+  .phone .art .canvas { height: 150px; border-radius: 12px; margin-top: 16px; background:
+    conic-gradient(from 210deg at 70% 30%, rgba(255,180,84,0.35), rgba(154,140,255,0.25), rgba(91,225,196,0.25), rgba(255,180,84,0.35));
+    border: 1px solid #2a334d; position:relative; overflow:hidden; }
+  .phone .art .canvas::after { content:""; position:absolute; inset:0; background: radial-gradient(circle at 30% 70%, rgba(255,255,255,0.18), transparent 50%); }
+  .tunnel-line { position:absolute; left:-60px; top:50%; width:60px; height:2px; background: linear-gradient(90deg, transparent, var(--amber)); opacity:.7; }
+
+  /* sections */
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  .sec-label { font-family: var(--mono); font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-faint); margin-bottom: 14px; }
+  h2 { font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4.6vw, 48px); letter-spacing: -0.03em; line-height: 1.04; margin: 0 0 18px; }
+  h3 { font-family: var(--display); font-weight: 600; font-size: 22px; letter-spacing: -0.02em; margin: 0 0 10px; }
+  p.lead { color: var(--fg-dim); font-size: 18px; max-width: 62ch; }
+  a { color: var(--amber-soft); text-decoration: none; border-bottom: 1px solid rgba(255,207,138,0.3); }
+  a:hover { border-color: var(--amber-soft); }
+
+  /* two-path cards */
+  .paths { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 34px; }
+  @media (max-width: 820px){ .paths { grid-template-columns: 1fr; } }
+  .card { background: linear-gradient(180deg, var(--panel), var(--ink-2)); border: 1px solid var(--line); border-radius: var(--radius); padding: 26px; position: relative; overflow: hidden; transition: transform .2s, border-color .2s; }
+  .card:hover { transform: translateY(-4px); border-color: var(--accent, var(--amber)); }
+  .card.private { --accent: var(--teal); }
+  .card.public { --accent: var(--amber); }
+  .card .tag { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); border:1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; padding: 4px 10px; display:inline-block; }
+  .card h3 code { font-family: var(--mono); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); padding: 1px 8px; border-radius: 6px; font-size: 0.7em; }
+  .card .who { font-size: 14px; color: var(--fg-dim); margin: 12px 0 0; }
+  .card ul { list-style: none; padding: 0; margin: 18px 0 0; }
+  .card li { font-size: 14.5px; padding: 8px 0 8px 26px; position: relative; border-top: 1px dashed var(--line); }
+  .card li:first-child { border-top: 0; }
+  .card li::before { content: "›"; position:absolute; left: 4px; color: var(--accent); font-family: var(--mono); }
+  .card .strip { position:absolute; top:0; left:0; right:0; height: 3px; background: var(--accent); opacity:.8; }
+
+  /* requirements table */
+  .req-table { width: 100%; border-collapse: collapse; margin-top: 28px; font-size: 14.5px; overflow: hidden; border-radius: 12px; border: 1px solid var(--line); }
+  .req-table th, .req-table td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .req-table thead th { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-faint); background: var(--panel-2); }
+  .req-table tbody tr:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .req-table td:first-child { font-family: var(--mono); color: var(--fg-dim); white-space: nowrap; }
+  .req-table .pos { color: var(--teal); } .req-table .neg { color: var(--amber); }
+  .req-table tr:last-child td { border-bottom: 0; }
+  .scroll-x { overflow-x: auto; }
+
+  /* code blocks */
+  .code { background: #06080d; border: 1px solid var(--line); border-radius: 12px; font-family: var(--mono); font-size: 14px; margin-top: 16px; overflow: hidden; }
+  .code .head { display:flex; justify-content: space-between; align-items:center; padding: 8px 14px; border-bottom: 1px solid var(--line); color: var(--fg-faint); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+  .code pre { margin: 0; padding: 16px; overflow-x: auto; line-height: 1.75; }
+  .code .c { color: var(--fg-faint); }      /* comment */
+  .code .p { color: var(--amber); }          /* program */
+  .code .a { color: var(--teal); }           /* arg/subcommand */
+  .copy { background: transparent; border: 1px solid var(--line); color: var(--fg-dim); border-radius: 6px; font-family: var(--mono); font-size: 11px; padding: 4px 9px; cursor: pointer; transition: all .15s; }
+  .copy:hover { border-color: var(--amber); color: var(--amber); }
+  .copy.done { color: var(--teal); border-color: var(--teal); }
+
+  /* command list */
+  .cmds { margin-top: 26px; display: grid; gap: 0; border: 1px solid var(--line); border-radius: 12px; overflow:hidden; }
+  .cmd { display:grid; grid-template-columns: 160px 1fr; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line); align-items: baseline; }
+  .cmd:first-child { border-top: 0; }
+  .cmd code { font-family: var(--mono); color: var(--amber-soft); font-size: 14px; }
+  .cmd span { color: var(--fg-dim); font-size: 14px; }
+  @media (max-width:560px){ .cmd { grid-template-columns: 1fr; gap: 4px; } }
+
+  /* security callouts */
+  .notes { display:grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 28px; }
+  @media (max-width:760px){ .notes { grid-template-columns: 1fr; } }
+  .note { border-left: 3px solid var(--amber); background: var(--panel); border-radius: 0 12px 12px 0; padding: 16px 20px; }
+  .note.warn { border-color: var(--danger); }
+  .note.good { border-color: var(--teal); }
+  .note h4 { margin: 0 0 6px; font-family: var(--mono); font-size: 13px; letter-spacing: .04em; }
+  .note p { margin: 0; font-size: 14px; color: var(--fg-dim); }
+
+  .hard-list { margin-top: 22px; display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 14px; }
+  .hard { background: var(--panel); border:1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .hard .k { font-family: var(--mono); color: var(--teal); font-size: 12px; letter-spacing:.06em; }
+  .hard .v { font-size: 14px; color: var(--fg-dim); margin-top: 6px; }
+
+  footer { border-top: 1px solid var(--line); padding: 40px 0 70px; color: var(--fg-faint); font-family: var(--mono); font-size: 13px; }
+  footer .row { display:flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; align-items:center; }
+  footer a { color: var(--fg-dim); border:0; }
+  footer a:hover { color: var(--amber); }
+
+  .disclaimer { font-size: 12.5px; color: var(--fg-faint); margin-top: 14px; max-width: 70ch; line-height: 1.6; }
+
+  /* reveal on load */
+  .reveal { opacity: 0; transform: translateY(16px); animation: rise .7s cubic-bezier(.2,.7,.2,1) forwards; }
+  @keyframes rise { to { opacity:1; transform:none; } }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="brand"><span class="dot"></span> odpeek</div>
+  <div class="nav-links">
+    <a href="#what" class="hide-sm"><span class="en">What</span><span class="ko">소개</span></a>
+    <a href="#requirements" class="hide-sm"><span class="en">Requirements</span><span class="ko">요구사항</span></a>
+    <a href="#install"><span class="en">Install</span><span class="ko">설치</span></a>
+    <a href="#security" class="hide-sm"><span class="en">Security</span><span class="ko">보안</span></a>
+    <a href="https://github.com/ictechgy/odpeek" target="_blank" rel="noopener">GitHub</a>
+    <div class="lang-toggle" role="group" aria-label="language">
+      <button id="btn-en" class="active" onclick="setLang('en')">EN</button>
+      <button id="btn-ko" onclick="setLang('ko')">한국어</button>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="hero-grid">
+      <div class="reveal">
+        <div class="eyebrow"><span class="en">zero-dependency CLI · macOS / Linux</span><span class="ko">무의존성 CLI · macOS / Linux</span></div>
+        <h1>od<span class="peek">peek</span>.</h1>
+        <p class="tagline">
+          <span class="en">See the <b>Open Design</b> on your desktop — from your phone. Privately over Tailscale, or anywhere through an authenticated Cloudflare tunnel.</span>
+          <span class="ko"><b>Open Design</b> 데스크톱 화면을 폰에서 본다. Tailscale로 사적으로, 또는 인증된 Cloudflare 터널로 어디서든.</span>
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">$ npm i -g odpeek</a>
+          <a class="btn btn-ghost" href="https://github.com/ictechgy/odpeek" target="_blank" rel="noopener">GitHub →</a>
+        </div>
+        <div class="badges">
+          <span class="badge"><b>0</b> <span class="en">npm deps</span><span class="ko">의존성</span></span>
+          <span class="badge"><b>2</b> <span class="en">exposure modes</span><span class="ko">노출 방식</span></span>
+          <span class="badge"><span class="en">Basic-auth + lockout</span><span class="ko">Basic 인증 + 잠금</span></span>
+          <span class="badge">MIT</span>
+        </div>
+      </div>
+      <div class="phone-stage reveal" style="animation-delay:.15s">
+        <div class="phone">
+          <div class="notch"></div>
+          <div class="tunnel-line"></div>
+          <div class="screen">
+            <div class="bar"><span>odpeek</span><span>100% ▰▰▰</span></div>
+            <div class="art">
+              <div class="row w2"></div><div class="row w1"></div>
+              <div class="canvas"></div>
+              <div class="row w3"></div><div class="row w2"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section id="what">
+    <div class="sec-label"><span class="en">What it is</span><span class="ko">무엇인가</span></div>
+    <h2><span class="en">Your localhost design, on the small screen.</span><span class="ko">로컬호스트의 디자인을, 작은 화면으로.</span></h2>
+    <p class="lead">
+      <span class="en">The Open Design (OD) desktop app serves its web UI on <code>127.0.0.1</code> only, and the port changes on every restart — so a phone can't reach it. <b>odpeek</b> auto-detects the live OD port and exposes it through one of two paths. It only ever exposes the OD running on <i>your own</i> machine.</span>
+      <span class="ko">Open Design(OD) 데스크톱 앱은 웹 UI를 <code>127.0.0.1</code>에만 띄우고 재시작마다 포트가 바뀌어 폰에서 닿을 수 없다. <b>odpeek</b>은 현재 OD 포트를 자동 감지해 두 방식 중 하나로 노출한다. 노출되는 건 오직 <i>본인 컴퓨터</i>의 OD뿐이다.</span>
+    </p>
+
+    <div class="paths">
+      <div class="card private">
+        <span class="strip"></span>
+        <span class="tag">private · tailnet</span>
+        <h3><code>up</code> — Tailscale</h3>
+        <p class="who"><span class="en">Visible to <b>your own devices only</b> (your phone on your tailnet). Never the public internet.</span><span class="ko"><b>내 기기에만</b> 보임(내 tailnet의 폰). 공개 인터넷에 안 열림.</span></p>
+        <ul>
+          <li><span class="en">WireGuard-encrypted, free</span><span class="ko">WireGuard 암호화, 무료</span></li>
+          <li><span class="en">Best on Wi-Fi / same private network</span><span class="ko">Wi-Fi·같은 사설망에서 최적</span></li>
+          <li><span class="en">Cellular may be blocked by carrier CGNAT (100.64/10)</span><span class="ko">셀룰러는 통신사 CGNAT(100.64/10) 충돌로 막힐 수 있음</span></li>
+        </ul>
+      </div>
+      <div class="card public">
+        <span class="strip"></span>
+        <span class="tag">public · authenticated</span>
+        <h3><code>tunnel</code> — Cloudflare</h3>
+        <p class="who"><span class="en">A <b>public HTTPS URL guarded by Basic auth</b>. Reachable by anyone you hand the URL + password to.</span><span class="ko"><b>Basic 인증으로 보호된 공개 HTTPS URL</b>. URL+비번을 받은 사람만 접속.</span></p>
+        <ul>
+          <li><span class="en">Works on cellular / any network</span><span class="ko">셀룰러·어떤 망에서든 동작</span></li>
+          <li><span class="en">Dials out to localhost → bypasses firewall / CGNAT / DNS</span><span class="ko">로컬호스트로 아웃바운드 → 방화벽·CGNAT·DNS 우회</span></li>
+          <li><span class="en">No Cloudflare account needed for the quick tunnel</span><span class="ko">빠른 터널은 Cloudflare 계정 불필요</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="requirements">
+    <div class="sec-label"><span class="en">Requirements &amp; prerequisites</span><span class="ko">요구사항 · 전제조건</span></div>
+    <h2><span class="en">What you need on each side.</span><span class="ko">양쪽에 필요한 것.</span></h2>
+    <p class="lead"><span class="en">Run <code>odpeek doctor</code> anytime to check which prerequisites are satisfied.</span><span class="ko"><code>odpeek doctor</code>로 어떤 전제조건이 충족됐는지 언제든 점검할 수 있다.</span></p>
+    <div class="scroll-x">
+      <table class="req-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th><code>up</code> — Tailscale</th>
+            <th><code>tunnel</code> — Cloudflare</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Host OS</td><td colspan="2"><span class="en">macOS or Linux (uses <code>lsof</code> / <code>pgrep</code> to detect the OD port)</span><span class="ko">macOS 또는 Linux (<code>lsof</code>/<code>pgrep</code>로 OD 포트 감지)</span></td></tr>
+          <tr><td>Node.js</td><td colspan="2">&gt;= 18</td></tr>
+          <tr><td>Open Design</td><td colspan="2"><span class="en">desktop app running on the host</span><span class="ko">데스크톱 앱이 호스트에서 실행 중</span></td></tr>
+          <tr>
+            <td>Tool</td>
+            <td><a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> <span class="en">installed + logged in</span><span class="ko">설치 + 로그인</span></td>
+            <td><a href="https://github.com/cloudflare/cloudflared" target="_blank" rel="noopener">cloudflared</a> — <span class="en">macOS</span><span class="ko">맥</span> <code>brew install cloudflared</code>, Linux <a href="https://pkg.cloudflare.com/index.html" target="_blank" rel="noopener">docs</a></td>
+          </tr>
+          <tr>
+            <td>Account</td>
+            <td><span class="pos en">free Tailscale account — host &amp; phone on the <b>same</b> tailnet</span><span class="pos ko">무료 Tailscale 계정 — 맥·폰이 <b>같은</b> tailnet</span></td>
+            <td><span class="neg en"><b>none</b> for quick tunnel; account + domain only for a stable named tunnel / Access</span><span class="neg ko">빠른 터널은 <b>불필요</b>; 고정 URL·Access만 계정+도메인 필요</span></td>
+          </tr>
+          <tr>
+            <td><span class="en">On your phone</span><span class="ko">폰 쪽</span></td>
+            <td><span class="en">Tailscale app + same account</span><span class="ko">Tailscale 앱 + 같은 계정</span></td>
+            <td><span class="en">just a browser (URL + user/password)</span><span class="ko">브라우저만 (URL + 아이디/비번)</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="disclaimer"><span class="en"><b>Community tool.</b> odpeek is unofficial and not affiliated with or endorsed by Open Design. It has zero npm dependencies — it only shells out to the tools above.</span><span class="ko"><b>비공식 도구.</b> odpeek은 Open Design과 제휴·보증 관계가 없는 서드파티 도구다. npm 의존성이 전혀 없고 위 도구들을 호출해 쓸 뿐이다.</span></p>
+  </section>
+
+  <section id="install">
+    <div class="sec-label"><span class="en">Install</span><span class="ko">설치</span></div>
+    <h2><span class="en">One line. Pick your channel.</span><span class="ko">한 줄이면 끝. 채널 선택.</span></h2>
+    <div class="code">
+      <div class="head"><span>npm</span><button class="copy" data-copy="npm install -g odpeek">copy</button></div>
+      <pre><span class="p">npm</span> install -g <span class="a">odpeek</span></pre>
+    </div>
+    <div class="code">
+      <div class="head"><span>homebrew</span><button class="copy" data-copy="brew install ictechgy/tap/odpeek">copy</button></div>
+      <pre><span class="p">brew</span> install <span class="a">ictechgy/tap/odpeek</span></pre>
+    </div>
+    <div class="code">
+      <div class="head"><span><span class="en">claude code plugin</span><span class="ko">Claude Code 플러그인</span></span><button class="copy" data-copy="/plugin marketplace add ictechgy/odpeek">copy</button></div>
+      <pre><span class="p">/plugin</span> marketplace add <span class="a">ictechgy/odpeek</span>
+<span class="p">/plugin</span> install <span class="a">odpeek</span></pre>
+    </div>
+
+    <h3 style="margin-top:40px"><span class="en">Commands</span><span class="ko">명령</span></h3>
+    <div class="cmds">
+      <div class="cmd"><code>odpeek up</code><span><span class="en">Expose OD to your tailnet (Wi-Fi / private)</span><span class="ko">OD를 tailnet에 노출 (Wi-Fi/사설망)</span></span></div>
+      <div class="cmd"><code>odpeek tunnel</code><span><span class="en">Public Cloudflare HTTPS tunnel, Basic auth (cellular / anywhere)</span><span class="ko">공개 Cloudflare HTTPS 터널, Basic 인증 (셀룰러/어디서든)</span></span></div>
+      <div class="cmd"><code>odpeek status</code><span><span class="en">Show exposure state + detected OD port</span><span class="ko">노출 상태 + 감지된 OD 포트</span></span></div>
+      <div class="cmd"><code>odpeek doctor</code><span><span class="en">Diagnose the environment / prerequisites</span><span class="ko">환경·전제조건 진단</span></span></div>
+      <div class="cmd"><code>odpeek off</code><span><span class="en">Tear everything down (serve + tunnel)</span><span class="ko">모든 노출 해제 (serve + 터널)</span></span></div>
+    </div>
+    <div class="code" style="margin-top:22px">
+      <div class="head"><span><span class="en">fixed password (optional)</span><span class="ko">고정 비밀번호(선택)</span></span><button class="copy" data-copy="ODPEEK_PASS=mypw odpeek tunnel">copy</button></div>
+      <pre><span class="a">ODPEEK_PASS</span>=mypw <span class="p">odpeek</span> tunnel   <span class="c"># <span class="en">browser remembers it</span><span class="ko">브라우저가 기억</span></span></pre>
+    </div>
+  </section>
+
+  <section id="security">
+    <div class="sec-label"><span class="en">Security</span><span class="ko">보안</span></div>
+    <h2><span class="en">A public URL, hardened.</span><span class="ko">공개 URL, 단단하게.</span></h2>
+    <p class="lead"><span class="en">The <code>tunnel</code> URL is public, so the auth proxy ships hardened by default — but it's still a public exposure you should manage.</span><span class="ko"><code>tunnel</code> URL은 공개이므로 인증 프록시가 기본 하드닝돼 있다 — 그래도 공개 노출이니 사용자가 관리해야 한다.</span></p>
+
+    <div class="hard-list">
+      <div class="hard"><div class="k">brute-force lockout</div><div class="v"><span class="en">8 fails → 15-min block + global throttle</span><span class="ko">8회 실패 → 15분 차단 + 전역 스로틀</span></div></div>
+      <div class="hard"><div class="k">auth bypass</div><div class="v"><span class="en">WebSocket handshake verified before piping</span><span class="ko">파이프 전 WebSocket 핸드셰이크 검증</span></div></div>
+      <div class="hard"><div class="k">headers</div><div class="v"><span class="en">HSTS, nosniff, frame &amp; referrer policy; auth header stripped upstream</span><span class="ko">HSTS·nosniff·프레임/리퍼러 정책, 인증 헤더 미전달</span></div></div>
+      <div class="hard"><div class="k">credentials</div><div class="v"><span class="en">timing-safe compare; ~71-bit random default; passed via env not argv</span><span class="ko">타이밍 안전 비교, ~71비트 난수 기본, argv 대신 env 전달</span></div></div>
+      <div class="hard"><div class="k">idle shutdown</div><div class="v"><span class="en">tunnel auto-closes after 30 min idle</span><span class="ko">30분 유휴 시 자동 종료</span></div></div>
+      <div class="hard"><div class="k">logs</div><div class="v"><span class="en">attempts logged to ~/.odpeek/auth.log (sanitized, never the password)</span><span class="ko">~/.odpeek/auth.log에 기록(살균, 비번 제외)</span></div></div>
+    </div>
+
+    <div class="notes">
+      <div class="note warn">
+        <h4>⚠ <span class="en">The tunnel URL is public</span><span class="ko">터널 URL은 공개</span></h4>
+        <p><span class="en">Run <code>odpeek off</code> when you're done, and be mindful of exposing sensitive designs. Don't share the URL + password loosely.</span><span class="ko">다 봤으면 <code>odpeek off</code>, 민감한 디자인 노출에 주의. URL+비번을 함부로 공유하지 말 것.</span></p>
+      </div>
+      <div class="note good">
+        <h4>✓ <span class="en">No inbound needed</span><span class="ko">인바운드 불필요</span></h4>
+        <p><span class="en">If macOS asks "Allow incoming connections for node?", you can Deny — the design relies on loopback + outbound.</span><span class="ko">macOS가 "node 인바운드 허용?"을 물으면 거부해도 된다 — 설계가 루프백+아웃바운드 기반이다.</span></p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap row">
+    <div>odpeek · MIT · <span class="en">community tool, not affiliated with Open Design</span><span class="ko">비공식 도구, Open Design과 무관</span></div>
+    <div><a href="https://github.com/ictechgy/odpeek" target="_blank" rel="noopener">github.com/ictechgy/odpeek</a> · <a href="https://www.npmjs.com/package/odpeek" target="_blank" rel="noopener">npm</a></div>
+  </div>
+</footer>
+
+<script>
+  function setLang(lang) {
+    document.documentElement.classList.toggle('lang-ko', lang === 'ko');
+    document.documentElement.classList.toggle('lang-en', lang !== 'ko');
+    document.documentElement.lang = lang === 'ko' ? 'ko' : 'en';
+    document.getElementById('btn-en').classList.toggle('active', lang !== 'ko');
+    document.getElementById('btn-ko').classList.toggle('active', lang === 'ko');
+    try { localStorage.setItem('odpeek-lang', lang); } catch (e) {}
+  }
+  // restore preference, else honor browser language
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('odpeek-lang'); } catch (e) {}
+    if (!saved) saved = (navigator.language || '').toLowerCase().startsWith('ko') ? 'ko' : 'en';
+    setLang(saved);
+  })();
+  // copy buttons
+  document.querySelectorAll('.copy').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var text = b.getAttribute('data-copy');
+      navigator.clipboard.writeText(text).then(function () {
+        var prev = b.textContent; b.textContent = 'copied'; b.classList.add('done');
+        setTimeout(function () { b.textContent = prev; b.classList.remove('done'); }, 1400);
+      });
+    });
+  });
+</script>
+</body>
+</html>
