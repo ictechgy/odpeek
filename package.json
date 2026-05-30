@@ -1,10 +1,10 @@
 {
-  "name": "od-mobile",
+  "name": "odpeek",
   "version": "0.1.0",
   "description": "Expose Open Design's local web UI to your Tailscale tailnet so you can view design artifacts on your phone.",
   "type": "module",
   "bin": {
-    "od-mobile": "bin/od-mobile.mjs"
+    "odpeek": "bin/odpeek.mjs"
   },
   "files": [
     "bin/",
@@ -22,12 +22,12 @@
   ],
   "author": "Coden <ictechgy@gmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/ictechgy/od-mobile#readme",
+  "homepage": "https://github.com/ictechgy/odpeek#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ictechgy/od-mobile.git"
+    "url": "git+https://github.com/ictechgy/odpeek.git"
   },
   "bugs": {
-    "url": "https://github.com/ictechgy/od-mobile/issues"
+    "url": "https://github.com/ictechgy/odpeek/issues"
   }
 }

@@ -2,3 +2,11 @@ node_modules/
 *.log
 .DS_Store
 *.tgz
+
+# 도구 런타임 노이즈 (oh-my-claudecode / serena 등)
+.omc/
+.omx/
+.serena/
+
+# 개발 핸드오프 문서 (개인정보·내부 환경 사실 포함 — 공개 repo 제외)
+HANDOFF.md

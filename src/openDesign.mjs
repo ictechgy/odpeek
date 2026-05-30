@@ -7,21 +7,29 @@ import { platform } from 'node:os';
 export const DEFAULT_PATTERN = 'web-sidecar\\.mjs';
 
 /**
- * 패턴에 매칭되는 첫 프로세스의 PID를 반환한다.
- * @returns {number|null} PID, 매칭 없으면 null
+ * 패턴에 매칭되는 프로세스들의 PID 목록을 반환한다.
+ * 자기 자신(이 CLI 프로세스)과 부모는 오매칭을 피하기 위해 제외한다.
+ * @returns {number[]} 매칭된 PID 배열(매칭 없으면 빈 배열)
+ * @throws pgrep 실행 자체가 실패(미설치/권한)하면 에러
  */
-function findPid(pattern) {
+function findPids(pattern) {
+  let output;
   try {
-    const output = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' });
-    const first = output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)[0];
-    return first ? Number(first) : null;
-  } catch {
-    // pgrep는 매칭이 없으면 비0으로 종료하므로 null로 처리한다.
-    return null;
+    output = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' });
+  } catch (error) {
+    // pgrep는 매칭이 없으면 exit code 1로 끝난다(status === 1). 이는 정상.
+    if (error.status === 1) return [];
+    // 그 외(ENOENT=미설치, 권한 등)는 무매칭과 구분해 에러로 올린다.
+    if (error.code === 'ENOENT') {
+      throw new Error('pgrep을 찾을 수 없습니다. macOS/Linux에서 실행하세요.');
+    }
+    throw new Error(`프로세스 검색 실패(pgrep): ${error.message}`);
   }
+  const exclude = new Set([process.pid, process.ppid]);
+  return output
+    .split('\n')
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && !exclude.has(pid));
 }
 
 /**
@@ -46,18 +54,27 @@ function listeningPort(pid) {
  * Open Design 웹 UI의 현재 로컬 포트를 감지한다.
  * @param {string} pattern OD 프로세스 매칭 패턴
  * @returns {{pid: number, port: number}}
- * @throws OD가 실행 중이 아니거나 포트를 찾지 못하면 에러
+ * @throws OD 미실행, 다중 매칭(오노출 위험), 포트 미발견 시 에러
  */
 export function detectWebPort(pattern = DEFAULT_PATTERN) {
   if (platform() === 'win32') {
     throw new Error('Windows는 아직 지원하지 않습니다 (lsof/pgrep 의존).');
   }
-  const pid = findPid(pattern);
-  if (!pid) {
+  const pids = findPids(pattern);
+  if (pids.length === 0) {
     throw new Error(
       'Open Design web-sidecar 프로세스를 찾을 수 없습니다. OD가 실행 중인지 확인하세요.',
     );
   }
+  // 패턴이 너무 넓어 여러 프로세스가 잡히면, 엉뚱한 로컬 서비스를 공개로 노출할
+  // 위험이 있으므로 임의 선택하지 않고 중단한다.
+  if (pids.length > 1) {
+    throw new Error(
+      `패턴 "${pattern}"이 여러 프로세스(${pids.join(', ')})에 매칭됩니다. ` +
+        '--pattern으로 더 구체적인 패턴을 지정하세요(엉뚱한 서비스 노출 방지).',
+    );
+  }
+  const pid = pids[0];
   const port = listeningPort(pid);
   if (!port) {
     throw new Error(`PID ${pid}의 LISTEN 포트를 찾지 못했습니다.`);
