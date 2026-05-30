@@ -207,7 +207,7 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
       return;
     }
     if (state === 'unauthorized') {
-      res.writeHead(401, withSecurity({ 'WWW-Authenticate': 'Basic realm="od-mobile"' }));
+      res.writeHead(401, withSecurity({ 'WWW-Authenticate': 'Basic realm="odpeek"' }));
       res.end('Authentication required\n');
       return;
     }
@@ -250,7 +250,7 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
     }
     if (state === 'unauthorized') {
       clientSocket.write(
-        'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="od-mobile"\r\nConnection: close\r\n\r\n',
+        'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="odpeek"\r\nConnection: close\r\n\r\n',
       );
       clientSocket.destroy();
       return;

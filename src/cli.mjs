@@ -1,4 +1,4 @@
-// od-mobile CLI 본체 — 명령 파싱과 각 동작 실행을 담당한다.
+// odpeek CLI 본체 — 명령 파싱과 각 동작 실행을 담당한다.
 import { readFileSync, openSync, closeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -34,23 +34,23 @@ const pkg = JSON.parse(
 );
 
 // 분리 프로세스(인증 프록시) 재기동에 쓸 이 CLI의 진입 스크립트 경로.
-const BIN_PATH = fileURLToPath(new URL('../bin/od-mobile.mjs', import.meta.url));
+const BIN_PATH = fileURLToPath(new URL('../bin/odpeek.mjs', import.meta.url));
 
-// 폰에서 접속할 tailnet 노출 포트. 환경변수 OD_MOBILE_PORT로 덮어쓸 수 있다.
-const DEFAULT_PORT = Number(process.env.OD_MOBILE_PORT) || 8080;
+// 폰에서 접속할 tailnet 노출 포트. 환경변수 ODPEEK_PORT로 덮어쓸 수 있다.
+const DEFAULT_PORT = Number(process.env.ODPEEK_PORT) || 8080;
 // 터널 모드에서 인증 프록시가 듣는 로컬 포트.
-const DEFAULT_AUTH_PORT = Number(process.env.OD_MOBILE_AUTH_PORT) || 8765;
+const DEFAULT_AUTH_PORT = Number(process.env.ODPEEK_AUTH_PORT) || 8765;
 // 터널 유휴 자동 종료(분). 0이면 비활성. 노출 시간을 줄여 공격 표면을 축소한다.
-const DEFAULT_IDLE_MIN = process.env.OD_MOBILE_IDLE_MIN !== undefined
-  ? Number(process.env.OD_MOBILE_IDLE_MIN)
+const DEFAULT_IDLE_MIN = process.env.ODPEEK_IDLE_MIN !== undefined
+  ? Number(process.env.ODPEEK_IDLE_MIN)
   : 30;
 // 인증 시도 로그 경로.
-const AUTH_LOG = join(homedir(), '.od-mobile', 'auth.log');
+const AUTH_LOG = join(homedir(), '.odpeek', 'auth.log');
 
-const HELP = `od-mobile — Open Design 웹 UI를 폰에서 보기 (Tailscale / Cloudflare 터널)
+const HELP = `odpeek — Open Design 웹 UI를 폰에서 보기 (Tailscale / Cloudflare 터널)
 
 사용법:
-  od-mobile [command] [options]
+  odpeek [command] [options]
 
 Commands:
   up        OD를 tailnet에 노출 (Wi-Fi/사설망 권장 — 셀룰러는 통신사 CGNAT 충돌 주의)
@@ -62,15 +62,15 @@ Commands:
   doctor    환경 진단
 
 Options:
-  -p, --port <n>     tailnet 노출 포트 (기본 ${DEFAULT_PORT}, env OD_MOBILE_PORT)
+  -p, --port <n>     tailnet 노출 포트 (기본 ${DEFAULT_PORT}, env ODPEEK_PORT)
       --pattern <s>  OD 프로세스 매칭 패턴 (기본 ${DEFAULT_PATTERN})
-      --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env OD_MOBILE_IDLE_MIN)
+      --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env ODPEEK_IDLE_MIN)
   -h, --help         도움말
   -v, --version      버전
 
 tunnel: cloudflared가 localhost로 아웃바운드 연결하므로 macOS 방화벽/CGNAT/DNS를
         모두 우회한다. 공개 URL이라 OD 앞단에 HTTP Basic 인증을 강제한다
-        (비밀번호는 env OD_MOBILE_PASS 또는 실행 시 자동 생성).`;
+        (비밀번호는 env ODPEEK_PASS 또는 실행 시 자동 생성).`;
 
 /** argv를 옵션 객체로 파싱한다. */
 function parseArgs(argv) {
@@ -163,8 +163,8 @@ function cmdUp(opts) {
   console.log(`OD 웹 UI(localhost:${port}, pid ${pid}) → tailnet 노출 완료.\n`);
   if (ip) console.log(`  폰에서 열기:  http://${ip}:${opts.port}   ← Wi-Fi에서 권장`);
   if (dns) console.log(`  (이름으로도:  http://${dns}:${opts.port})`);
-  console.log('\n  셀룰러에서 막히면 → od-mobile tunnel');
-  console.log('  해제: od-mobile off');
+  console.log('\n  셀룰러에서 막히면 → odpeek tunnel');
+  console.log('  해제: odpeek off');
 }
 
 /** 실행 중인 cloudflared 터널과 인증 프록시를 종료한다. */
@@ -201,8 +201,8 @@ async function cmdTunnel(opts) {
   const { pid: odPid, port: targetPort } = detectWebPort(opts.pattern);
 
   // 자격 증명: env 우선, 없으면 무작위 생성(보안 기본값).
-  const user = process.env.OD_MOBILE_USER || 'od';
-  const pass = process.env.OD_MOBILE_PASS || randomBytes(9).toString('base64url');
+  const user = process.env.ODPEEK_USER || 'od';
+  const pass = process.env.ODPEEK_PASS || randomBytes(9).toString('base64url');
 
   const idleMs = Number.isFinite(opts.idleMin) && opts.idleMin > 0 ? opts.idleMin * 60000 : 0;
 
@@ -223,7 +223,7 @@ async function cmdTunnel(opts) {
     {
       detached: true,
       stdio: ['ignore', proxyLog, proxyLog],
-      env: { ...process.env, OD_MOBILE_USER: user, OD_MOBILE_PASS: pass },
+      env: { ...process.env, ODPEEK_USER: user, ODPEEK_PASS: pass },
     },
   );
   proxy.unref();
@@ -271,15 +271,15 @@ async function cmdTunnel(opts) {
   console.log(`  로그인 — 아이디: ${user}   비밀번호: ${pass}\n`);
   console.log('  ※ 공개 URL이지만 Basic 인증·무차별대입 잠금·보안 헤더로 보호됩니다.');
   console.log(`  ※ ${idleMs ? `${opts.idleMin}분 유휴 시 자동 종료` : '유휴 자동종료 비활성'} · 시도 로그: ${AUTH_LOG}`);
-  console.log('  ※ URL은 실행마다 바뀝니다. 해제: od-mobile off');
+  console.log('  ※ URL은 실행마다 바뀝니다. 해제: odpeek off');
 }
 
 /** (내부용) 분리 프로세스로 호출되어 Basic 인증 프록시를 돌린다. */
 function cmdAuthProxy(opts) {
   const [, listenPort, targetPort, idleMs, logFile] = opts._;
   // 자격증명은 argv가 아닌 환경변수로 전달받는다(부모가 spawn env로 주입).
-  const user = process.env.OD_MOBILE_USER || 'od';
-  const pass = process.env.OD_MOBILE_PASS || '';
+  const user = process.env.ODPEEK_USER || 'od';
+  const pass = process.env.ODPEEK_PASS || '';
   runAuthProxy(Number(listenPort), Number(targetPort), user, pass, {
     idleMs: Number(idleMs) || 0,
     logFile,
@@ -381,7 +381,7 @@ const COMMANDS = {
 };
 
 /**
- * CLI 진입 함수. bin/od-mobile.mjs에서 호출한다.
+ * CLI 진입 함수. bin/odpeek.mjs에서 호출한다.
  * @param {string[]} argv process.argv.slice(2)
  */
 export async function main(argv) {

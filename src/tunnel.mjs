@@ -11,7 +11,7 @@ import {
   chmodSync,
 } from 'node:fs';
 
-const STATE_DIR = join(homedir(), '.od-mobile');
+const STATE_DIR = join(homedir(), '.odpeek');
 const STATE_FILE = join(STATE_DIR, 'tunnel.json');
 
 // cloudflared 프로세스의 stdout/stderr 로그(여기서 공개 URL을 파싱한다).
