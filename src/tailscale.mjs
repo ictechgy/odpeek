@@ -1,23 +1,33 @@
 // Tailscale CLI 래퍼 — tailnet 정보 조회와 serve 프록시 제어를 담당한다.
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 
 // macOS GUI 앱은 tailscale 바이너리를 PATH에 안 넣는 경우가 있어 후보 경로를 함께 탐색한다.
 const MAC_APP_BIN = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+
+// 신뢰 가능한 절대 경로(패키지 매니저/앱 번들)를 먼저 시도하고, 마지막에 PATH를 본다.
+// 오염된 PATH로 공격자 제어 tailscale이 실행되는 것을 완화한다(PATH 하이재킹 방어).
+const TAILSCALE_CANDIDATES = [
+  '/opt/homebrew/bin/tailscale',
+  '/usr/local/bin/tailscale',
+  '/usr/bin/tailscale',
+  MAC_APP_BIN,
+  'tailscale', // PATH는 최후순위
+];
 
 /**
  * 사용 가능한 tailscale 실행 파일 경로를 반환한다.
  * @returns {string|null} 실행 파일 경로, 없으면 null
  */
 export function resolveTailscaleBin() {
-  try {
-    // PATH에 등록돼 있으면 그대로 사용한다.
-    execFileSync('tailscale', ['version'], { stdio: 'ignore' });
-    return 'tailscale';
-  } catch {
-    // PATH에 없을 때 macOS 앱 번들 경로를 시도한다.
-    return existsSync(MAC_APP_BIN) ? MAC_APP_BIN : null;
+  for (const candidate of TAILSCALE_CANDIDATES) {
+    try {
+      execFileSync(candidate, ['version'], { stdio: 'ignore' });
+      return candidate;
+    } catch {
+      // 다음 후보 시도
+    }
   }
+  return null;
 }
 
 /** tailscale 명령을 실행하고 표준출력 문자열을 반환한다. */
