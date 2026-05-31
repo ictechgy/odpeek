@@ -36,6 +36,7 @@ import {
   buildSessionsJson,
 } from './output.mjs';
 import { buildSessionsView } from './sessions.mjs';
+import { encodeQrMatrix, renderQrToTerminal } from './qr.mjs';
 
 // 패키지 메타(버전 출력용)를 루트 package.json에서 읽는다.
 const pkg = JSON.parse(
@@ -90,6 +91,8 @@ Options:
       --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env ODPEEK_IDLE_MIN)
       --ttl <min>    터널 최대 수명(분, 0=비활성, 기본 ${DEFAULT_TTL_MIN}, env ODPEEK_TTL_MIN). 유휴와 별개로 활동 무관하게 강제 종료
       --json         status/doctor/sessions 출력을 순수 JSON 한 줄로(파이프 안전). 비밀번호·전체 IP는 미포함
+      --no-qr        tunnel/ip/url 명령의 QR 코드 출력을 끈다(기본은 출력)
+      --qr-invert    QR 명암을 반전한다(밝은 배경 터미널에서 스캔 시 사용)
   -h, --help         도움말
   -v, --version      버전
 
@@ -136,6 +139,15 @@ function parseArgs(argv) {
     } else if (arg === '--json') {
       // status/doctor/sessions를 사람용 텍스트 대신 순수 JSON 한 줄로 출력한다(파이프 안전).
       opts.json = true;
+    } else if (arg === '--no-qr') {
+      // QR 출력을 끈다. 기본은 켜짐이므로 이 플래그로 비활성화한다.
+      opts.noQr = true;
+    } else if (arg === '--qr-invert') {
+      // 밝은 배경 터미널에서 QR 명암을 반전해 스캔 가능하게 한다.
+      opts.qrInvert = true;
+    } else if (arg === '--qr') {
+      // QR을 강제 활성화한다(기본이 켜짐이라 사실상 no-op이지만 명시적 사용 허용).
+      opts.noQr = false;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     } else if (arg === '-v' || arg === '--version') {
@@ -369,8 +381,24 @@ function cleanupTunnelChildren(children) {
   clearTunnel();
 }
 
+/**
+ * URL을 QR 코드로 인코딩해 터미널에 출력한다.
+ * v10(ECC L) 한도 초과 시 크래시 없이 안내 메시지만 출력한다.
+ * URL만 인코딩하며, 자격증명(userinfo)은 절대 포함하지 않는다.
+ * @param {string} url 인코딩할 URL(자격증명 미포함)
+ * @param {{ invert?: boolean }} options
+ */
+function printQr(url, { invert = false } = {}) {
+  try {
+    const matrix = encodeQrMatrix(url, { ecc: 'L' });
+    console.log(renderQrToTerminal(matrix, { invert, quiet: 4 }));
+  } catch {
+    console.log('  (QR 생략: URL이 너무 길어 v10 한도를 초과했습니다)');
+  }
+}
+
 /** 터널 노출 성공 결과를 출력한다. */
-function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin, ttlMs, ttlMin }) {
+function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin, ttlMs, ttlMin, showQrCaveat }) {
   console.log(`OD 웹 UI(localhost:${targetPort}) → Cloudflare 터널 노출 완료.\n`);
   console.log(`  폰에서 열기(셀룰러 OK):  ${url}`);
   console.log(`  로그인 — 아이디: ${user}   비밀번호: ${pass}\n`);
@@ -381,6 +409,10 @@ function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin, ttlMs
     console.log(`  ※ 최대 ${ttlMin}분 후 자동 종료(유휴와 별개, 활동 무관)`);
   }
   console.log('  ※ URL은 실행마다 바뀝니다. 해제: odpeek off');
+  // P5 캐비엇: QR이 출력될 때만 의미 있는 안내(tunnel 전용 — Basic 인증 자격증명은 QR 미포함).
+  if (showQrCaveat) {
+    console.log('  ※ QR은 주소만 담습니다 — 로그인 아이디/비밀번호는 위에 표시된 값을 폰에 직접 입력하세요.');
+  }
 }
 
 /**
@@ -433,7 +465,9 @@ async function cmdTunnel(opts) {
       startedAt: proxyStartedAt,
       ttlMs,
     });
-    printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin, ttlMs, ttlMin: opts.ttlMin });
+    printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin, ttlMs, ttlMin: opts.ttlMin, showQrCaveat: !opts.noQr });
+    // 공개 URL만 QR로 인코딩한다(자격증명/userinfo 미포함 — url 변수는 trycloudflare https URL 그대로).
+    if (!opts.noQr) printQr(url, { invert: opts.qrInvert });
   } catch (error) {
     // 부분 기동 상태를 남기지 않는다: 띄운 자식과 상태 파일을 정리하고 재던진다.
     cleanupTunnelChildren([proxy, cf]);
@@ -575,7 +609,10 @@ function cmdIp(opts) {
   if (!ip) {
     throw new Error('tailnet IP를 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
   }
-  console.log(`http://${ip}:${opts.port}`);
+  const ipUrl = `http://${ip}:${opts.port}`;
+  console.log(ipUrl);
+  // tailnet 주소는 자격증명 없음 → P5 캐비엇 불필요. QR은 IP URL만 인코딩한다.
+  if (!opts.noQr) printQr(ipUrl, { invert: opts.qrInvert });
 }
 
 /** MagicDNS 이름 기반 접속 주소를 출력한다. */
@@ -584,7 +621,10 @@ function cmdUrl(opts) {
   if (!dns) {
     throw new Error('MagicDNS 이름을 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
   }
-  console.log(`http://${dns}:${opts.port}`);
+  const dnsUrl = `http://${dns}:${opts.port}`;
+  console.log(dnsUrl);
+  // tailnet 주소는 자격증명 없음 → P5 캐비엇 불필요. QR은 DNS URL만 인코딩한다.
+  if (!opts.noQr) printQr(dnsUrl, { invert: opts.qrInvert });
 }
 
 /**
