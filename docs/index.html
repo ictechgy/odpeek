@@ -251,6 +251,8 @@
           <span class="badge"><b>0</b> <span class="en">npm deps</span><span class="ko">의존성</span></span>
           <span class="badge"><b>2</b> <span class="en">exposure modes</span><span class="ko">노출 방식</span></span>
           <span class="badge"><span class="en">Basic-auth + lockout</span><span class="ko">Basic 인증 + 잠금</span></span>
+          <span class="badge"><span class="en">TTL hard-cap</span><span class="ko">TTL 하드 캡</span></span>
+          <span class="badge"><span class="en">QR handoff</span><span class="ko">QR 코드</span></span>
           <span class="badge">MIT</span>
         </div>
       </div>
@@ -363,9 +365,10 @@
     <h3 style="margin-top:40px"><span class="en">Commands</span><span class="ko">명령</span></h3>
     <div class="cmds">
       <div class="cmd"><code>odpeek up</code><span><span class="en">Expose OD to your tailnet (Wi-Fi / private)</span><span class="ko">OD를 tailnet에 노출 (Wi-Fi/사설망)</span></span></div>
-      <div class="cmd"><code>odpeek tunnel</code><span><span class="en">Public Cloudflare HTTPS tunnel, Basic auth (cellular / anywhere)</span><span class="ko">공개 Cloudflare HTTPS 터널, Basic 인증 (셀룰러/어디서든)</span></span></div>
-      <div class="cmd"><code>odpeek status</code><span><span class="en">Show exposure state + detected OD port</span><span class="ko">노출 상태 + 감지된 OD 포트</span></span></div>
-      <div class="cmd"><code>odpeek doctor</code><span><span class="en">Diagnose the environment / prerequisites</span><span class="ko">환경·전제조건 진단</span></span></div>
+      <div class="cmd"><code>odpeek tunnel</code><span><span class="en">Public Cloudflare HTTPS tunnel, Basic auth (cellular / anywhere) — prints a QR code of the URL</span><span class="ko">공개 Cloudflare HTTPS 터널, Basic 인증 (셀룰러/어디서든) — URL의 QR 코드를 출력합니다</span></span></div>
+      <div class="cmd"><code>odpeek sessions</code><span><span class="en">Read-only session view: uptime, TTL remaining, auth failures, lockouts, source IPs (masked). Add <code>--json</code> for machine-readable output.</span><span class="ko">읽기 전용 세션 관측: uptime·TTL 잔여·인증 실패·잠금·출발 IP(마스킹). <code>--json</code>으로 JSON 출력도 됩니다.</span></span></div>
+      <div class="cmd"><code>odpeek status</code><span><span class="en">Show exposure state + detected OD port (<code>--json</code> for machine-readable)</span><span class="ko">노출 상태 + 감지된 OD 포트 (<code>--json</code>으로 JSON 출력 가능)</span></span></div>
+      <div class="cmd"><code>odpeek doctor</code><span><span class="en">Diagnose the environment / prerequisites (<code>--json</code> for machine-readable)</span><span class="ko">환경·전제조건 진단 (<code>--json</code>으로 JSON 출력 가능)</span></span></div>
       <div class="cmd"><code>odpeek off</code><span><span class="en">Tear everything down (serve + tunnel)</span><span class="ko">모든 노출 해제 (serve + 터널)</span></span></div>
     </div>
     <div class="code" style="margin-top:22px">
@@ -385,6 +388,8 @@
       <div class="hard"><div class="k">headers</div><div class="v"><span class="en">HSTS, nosniff, frame &amp; referrer policy; auth header stripped upstream</span><span class="ko">HSTS·nosniff·프레임/리퍼러 정책, 인증 헤더 미전달</span></div></div>
       <div class="hard"><div class="k">credentials</div><div class="v"><span class="en">timing-safe compare; ~71-bit random default; passed via env not argv</span><span class="ko">타이밍 공격에 안전한 비교, ~71비트 난수 기본, argv 대신 env로 전달</span></div></div>
       <div class="hard"><div class="k">idle shutdown</div><div class="v"><span class="en">tunnel auto-closes after 30 min idle</span><span class="ko">30분 유휴 시 자동 종료</span></div></div>
+      <div class="hard"><div class="k">TTL hard-cap</div><div class="v"><span class="en"><code>--ttl &lt;min&gt;</code> closes the tunnel after N min regardless of activity — idle may end it earlier, TTL ends it even when active</span><span class="ko"><code>--ttl &lt;분&gt;</code>으로 활동 무관 절대 최대 수명 설정 — 유휴는 더 일찍, TTL은 활동 중이어도 종료합니다</span></div></div>
+      <div class="hard"><div class="k">QR handoff</div><div class="v"><span class="en"><code>tunnel</code> / <code>ip</code> / <code>url</code> print a QR code of the address by default (<code>--no-qr</code> to disable, <code>--qr-invert</code> for light backgrounds). QR contains the address only — no credentials.</span><span class="ko"><code>tunnel</code>·<code>ip</code>·<code>url</code>은 기본으로 주소 QR을 출력합니다 (<code>--no-qr</code>로 끄기, <code>--qr-invert</code>로 반전). QR에는 주소만 담깁니다 — 비밀번호는 없습니다.</span></div></div>
       <div class="hard"><div class="k">logs</div><div class="v"><span class="en">attempts logged to ~/.odpeek/auth.log (sanitized, never the password)</span><span class="ko">~/.odpeek/auth.log에 기록(제어문자 정리, 비밀번호 제외)</span></div></div>
     </div>
 
