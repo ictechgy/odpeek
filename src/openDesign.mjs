@@ -33,21 +33,23 @@ function findPids(pattern) {
 }
 
 /**
- * 주어진 PID가 LISTEN 중인 첫 TCP 포트를 반환한다.
- * @returns {number|null} 포트 번호, 없으면 null
+ * 주어진 PID가 LISTEN 중인 TCP 포트들을 중복 없이 반환한다.
+ * IPv4/IPv6가 같은 포트를 두 줄로 보여도 Set으로 합쳐 한 번만 센다.
+ * @returns {number[]} 포트 배열(없으면 빈 배열)
  */
-function listeningPort(pid) {
+function listeningPorts(pid) {
   // lsof는 macOS/Linux 공통으로 존재한다. -a 로 PID 조건과 LISTEN 조건을 AND 결합한다.
   const output = execFileSync(
     'lsof',
     ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)],
     { encoding: 'utf8' },
   );
+  const ports = new Set();
   for (const line of output.split('\n')) {
     const match = line.match(/:(\d+)\s+\(LISTEN\)/);
-    if (match) return Number(match[1]);
+    if (match) ports.add(Number(match[1]));
   }
-  return null;
+  return [...ports];
 }
 
 /**
@@ -75,9 +77,17 @@ export function detectWebPort(pattern = DEFAULT_PATTERN) {
     );
   }
   const pid = pids[0];
-  const port = listeningPort(pid);
-  if (!port) {
+  const ports = listeningPorts(pid);
+  if (ports.length === 0) {
     throw new Error(`PID ${pid}의 LISTEN 포트를 찾지 못했습니다.`);
   }
-  return { pid, port };
+  // 한 프로세스가 여러 포트를 LISTEN 중이면 어느 것이 웹 UI인지 모호하다.
+  // 임의로 골라 엉뚱한 로컬 서비스를 공개 노출하지 않도록 중단한다.
+  if (ports.length > 1) {
+    throw new Error(
+      `PID ${pid}가 여러 포트(${ports.join(', ')})를 LISTEN 중입니다. ` +
+        '--pattern으로 OD web-sidecar만 매칭되도록 좁혀 주세요(엉뚱한 서비스 노출 방지).',
+    );
+  }
+  return { pid, port: ports[0] };
 }

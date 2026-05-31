@@ -17,8 +17,10 @@ const STATE_FILE = join(STATE_DIR, 'tunnel.json');
 // cloudflared 프로세스의 stdout/stderr 로그(여기서 공개 URL을 파싱한다).
 export const CF_LOG = join(STATE_DIR, 'cloudflared.log');
 
-// 공개 URL이 가질 수 있는 형식(가짜 URL 주입 방어용 검증 패턴).
-const TRYCLOUDFLARE_URL = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/i;
+// 공개 URL 호스트 형식. 추출용(앵커 없음)과 검증용(앵커 있음)이 같은 정의를 공유해
+// 한쪽만 바뀌어 추출/검증이 어긋나는 일을 막는다(가짜 URL 주입 방어).
+const TRYCLOUDFLARE_HOST = '[a-z0-9-]+\\.trycloudflare\\.com';
+const TRYCLOUDFLARE_URL = new RegExp(`^https://${TRYCLOUDFLARE_HOST}$`, 'i');
 
 /** 상태 디렉토리를 보장한다(소유자 전용 0700 — 타 로컬 사용자 열람 차단). */
 export function ensureDir() {
@@ -37,7 +39,7 @@ function isPositiveInt(value) {
 }
 
 /** 1~65535 범위의 포트인지 확인한다. */
-function isValidPort(value) {
+export function isValidPort(value) {
   return isPositiveInt(value) && value <= 65535;
 }
 
@@ -118,6 +120,6 @@ export function processMatches(pid, needle) {
  * @returns {string|null} 예: "https://abc-def.trycloudflare.com"
  */
 export function extractTrycloudflareUrl(text) {
-  const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+  const match = text.match(new RegExp(`https://${TRYCLOUDFLARE_HOST}`, 'i'));
   return match ? match[0] : null;
 }

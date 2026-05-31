@@ -11,7 +11,7 @@
 // 검증(101 확인 후에만 파이프 → 인증 우회 차단).
 import http from 'node:http';
 import net from 'node:net';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, openSync, closeSync, chmodSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import { readTunnel, clearTunnel, isAlive, processMatches } from './tunnel.mjs';
 
@@ -26,6 +26,10 @@ const MAX_TRACKED_IPS = 10000;
 // 최후 방어선이다.
 const GLOBAL_MAX_FAILS = 200;
 const GLOBAL_WINDOW_MS = 15 * 60 * 1000;
+// upstream(OD) 응답이 없을 때 소켓을 무한정 잡지 않도록 거는 타임아웃.
+const UPSTREAM_TIMEOUT_MS = 30 * 1000;
+// HSTS 만료(1년). 리터럴 대신 계산식으로 의도를 드러낸다.
+const HSTS_MAX_AGE_SEC = 365 * 24 * 60 * 60;
 
 // upstream(OD)으로 전달하면 안 되는 헤더.
 //  - authorization: 프록시에서 소비하는 자격이므로 OD로 새지 않게 제거.
@@ -42,10 +46,22 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   'upgrade',
 ]);
 
+// upstream(OD) 응답에서 제거할 hop-by-hop 헤더. 프록시 경계에서 끝나야 하며,
+// 공개 클라이언트로 새면 연결 재사용/스머글링 위험이 있다.
+const STRIPPED_RESPONSE_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
 // 모든 응답에 적용할 보안 헤더(OD 동작을 깨지 않는 안전한 항목만).
 // includeSubDomains는 공유 도메인(*.trycloudflare.com)에 부작용을 줄 수 있어 제외한다.
 const SECURITY_HEADERS = {
-  'Strict-Transport-Security': 'max-age=31536000',
+  'Strict-Transport-Security': `max-age=${HSTS_MAX_AGE_SEC}`,
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'SAMEORIGIN',
   'Referrer-Policy': 'no-referrer',
@@ -62,6 +78,8 @@ function safeEqual(a, b) {
 
 /** 요청의 Basic 인증 헤더가 기대 자격과 일치하는지 검사한다. */
 function isAuthorized(req, user, pass) {
+  // 빈 사용자명/비밀번호는 어떤 입력으로도 통과시키지 않는다(빈 자격 인증 우회 차단).
+  if (!user || !pass) return false;
   const header = req.headers['authorization'] || '';
   if (!header.startsWith('Basic ')) return false;
   const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
@@ -103,15 +121,41 @@ function clientIp(req) {
  */
 export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
   const { idleMs = 0, logFile } = options;
-  // IP별 실패 추적: ip -> { fails, lockUntil }
+  // 방어적 검증: 잘못된 포트나 빈 자격으로는 절대 기동하지 않는다(인증 우회/오노출 차단).
+  const portOk = (value) => Number.isInteger(value) && value >= 1 && value <= 65535;
+  if (!portOk(listenPort) || !portOk(targetPort)) {
+    console.error(`auth-proxy: 포트가 올바르지 않습니다 (listen=${listenPort}, target=${targetPort}).`);
+    process.exit(1);
+  }
+  if (!user || !pass) {
+    console.error('auth-proxy: 자격증명이 비어 있어 시작을 거부합니다.');
+    process.exit(1);
+  }
+
+  // IP별 실패 추적: ip -> { fails, lockUntil, lastSeen }
   const attempts = new Map();
   // 전역 실패 스로틀 상태.
   let globalFails = 0;
   let globalWindowStart = Date.now();
   let lastActivity = Date.now();
+  // 진행 중인 프록시 연결 수. 0보다 크면 유휴 종료를 보류한다.
+  let activeConnections = 0;
 
+  // 로그 파일은 접속 IP/시도 패턴 등 민감 정보를 담으므로 소유자 전용(0600)으로 강제한다.
+  let logInitialized = false;
+  const ensureLogFile = () => {
+    if (logInitialized || !logFile) return;
+    logInitialized = true;
+    try {
+      closeSync(openSync(logFile, 'a', 0o600));
+      chmodSync(logFile, 0o600); // 기존 파일도 0600으로 강제(umask 의존 제거)
+    } catch {
+      // 로그 파일 권한 설정 실패는 치명적이지 않음(서비스 지속)
+    }
+  };
   const log = (line) => {
     if (!logFile) return;
+    ensureLogFile();
     try {
       appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`);
     } catch {
@@ -125,6 +169,23 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
     for (const [ip, record] of attempts) {
       if (record.lockUntil && now >= record.lockUntil) attempts.delete(ip);
     }
+  };
+
+  /**
+   * Map이 상한에 도달했을 때 가장 오래 활동이 없던 항목을 축출한다(LRU).
+   * lockUntil:0(미완료 실패) 항목만 가득 차 prune이 비우지 못하는 고착을 막는다.
+   */
+  const evictOldest = () => {
+    let oldestIp = null;
+    let oldestSeen = Infinity;
+    for (const [ip, record] of attempts) {
+      const seen = record.lastSeen || 0;
+      if (seen < oldestSeen) {
+        oldestSeen = seen;
+        oldestIp = ip;
+      }
+    }
+    if (oldestIp !== null) attempts.delete(oldestIp);
   };
 
   /** 전역 윈도가 지났으면 카운터를 리셋한다. */
@@ -148,24 +209,31 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
   };
 
   /** 인증 실패를 기록하고(IP별 + 전역) 필요 시 잠금을 발동한다. */
-  const registerFailure = (ip, path) => {
+  const registerFailure = (ip, req) => {
     rollGlobalWindow();
     globalFails += 1;
+    const now = Date.now();
 
     const record = attempts.get(ip);
     const fails = (record?.fails || 0) + 1;
     if (fails >= MAX_FAILS) {
-      attempts.set(ip, { fails: 0, lockUntil: Date.now() + LOCK_MS });
+      attempts.set(ip, { fails: 0, lockUntil: now + LOCK_MS, lastSeen: now });
       log(`LOCKOUT ip=${sanitizeForLog(ip, 64)} (${MAX_FAILS} fails) for ${LOCK_MS / 60000}min`);
       return;
     }
-    // Map 상한: 이미 추적 중인 IP는 갱신, 새 IP는 여유가 있을 때만 추가.
-    if (attempts.has(ip) || attempts.size < MAX_TRACKED_IPS) {
-      attempts.set(ip, { fails, lockUntil: 0 });
-    } else {
+    // Map 상한: 이미 추적 중인 IP는 갱신, 새 IP는 여유가 있을 때 추가하되,
+    // 가득 차면 만료 정리 후에도 자리가 없을 때 가장 오래된 항목을 축출한다.
+    if (!attempts.has(ip) && attempts.size >= MAX_TRACKED_IPS) {
       pruneExpired();
+      if (attempts.size >= MAX_TRACKED_IPS) evictOldest();
     }
-    log(`AUTH_FAIL ip=${sanitizeForLog(ip, 64)} fails=${fails} path=${sanitizeForLog(path)}`);
+    attempts.set(ip, { fails, lockUntil: 0, lastSeen: now });
+    // CF-Connecting-IP는 신뢰 IP일 때만 잠금 키로 쓰지만, 감사를 위해 실제 소켓
+    // 주소도 함께 남긴다(로컬에서 CF 헤더를 위조한 경우를 추적).
+    log(
+      `AUTH_FAIL ip=${sanitizeForLog(ip, 64)} sock=${sanitizeForLog(req.socket.remoteAddress || '?', 64)} ` +
+        `fails=${fails} path=${sanitizeForLog(req.url)}`,
+    );
   };
 
   /**
@@ -176,7 +244,7 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
     const ip = clientIp(req);
     if (isGloballyLocked() || isIpLocked(ip)) return { ip, state: 'locked' };
     if (!isAuthorized(req, user, pass)) {
-      registerFailure(ip, req.url);
+      registerFailure(ip, req);
       return { ip, state: 'unauthorized' };
     }
     if (attempts.has(ip)) attempts.delete(ip);
@@ -191,6 +259,16 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
       out[key] = value;
     }
     out.host = `127.0.0.1:${targetPort}`;
+    return out;
+  };
+
+  /** upstream 응답에서 hop-by-hop 헤더를 제거한다(프록시 경계에서 종료). */
+  const cleanResponseHeaders = (headers = {}) => {
+    const out = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (STRIPPED_RESPONSE_HEADERS.has(key.toLowerCase())) continue;
+      out[key] = value;
+    }
     return out;
   };
 
@@ -214,6 +292,15 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
 
     // 인증 성공 — 활동 시각 갱신, 헤더 정리 후 OD로 프록시.
     lastActivity = Date.now();
+    activeConnections += 1;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      activeConnections -= 1;
+      lastActivity = Date.now();
+    };
+
     const upstream = http.request(
       {
         hostname: '127.0.0.1',
@@ -223,13 +310,30 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
         headers: forwardHeaders(req.headers),
       },
       (upstreamRes) => {
-        res.writeHead(upstreamRes.statusCode, withSecurity(upstreamRes.headers));
+        // 클라이언트가 이미 끊겼으면 응답을 버린다(헤더 전송 후 쓰기 에러 방지).
+        if (res.destroyed) {
+          upstreamRes.destroy();
+          return;
+        }
+        res.writeHead(upstreamRes.statusCode, withSecurity(cleanResponseHeaders(upstreamRes.headers)));
         upstreamRes.pipe(res);
       },
     );
+    // OD가 응답하지 않으면 소켓을 무한정 잡지 않도록 타임아웃을 건다.
+    upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => upstream.destroy());
     upstream.on('error', () => {
-      res.writeHead(502, withSecurity());
-      res.end('upstream error\n');
+      // 헤더가 아직 안 나갔을 때만 502를 쓴다(ERR_HTTP_HEADERS_SENT 방지).
+      if (!res.headersSent && !res.destroyed) {
+        res.writeHead(502, withSecurity());
+        res.end('upstream error\n');
+      } else {
+        res.destroy();
+      }
+    });
+    // 클라이언트가 먼저 끊기면 진행 중인 upstream 요청을 정리한다(소켓 누수 방지).
+    res.on('close', () => {
+      upstream.destroy();
+      finish();
     });
     req.pipe(upstream);
   });
@@ -280,6 +384,8 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
       upstream.write(`GET ${req.url} HTTP/1.1\r\n${headerLines}\r\n\r\n`);
       if (head && head.length) upstream.write(head);
     });
+    // OD가 연결을 받고도 핸드셰이크 응답을 안 주면 매달리지 않도록 타임아웃.
+    upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => upstream.destroy());
 
     // upstream 첫 응답의 상태줄이 101인지 확인한 뒤에만 파이프를 연다.
     let handshakeDone = false;
@@ -299,6 +405,21 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
       if (/^HTTP\/1\.\d 101 /.test(statusLine)) {
         handshakeDone = true;
         upstream.removeListener('data', onData);
+        upstream.setTimeout(0); // 핸드셰이크 완료 — 장기 WS 유지를 위해 유휴 타임아웃 해제
+        // 활성 연결로 집계해 진행 중에는 유휴 종료를 보류한다.
+        activeConnections += 1;
+        let wsClosed = false;
+        const closeWs = () => {
+          if (wsClosed) return;
+          wsClosed = true;
+          activeConnections -= 1;
+          lastActivity = Date.now();
+        };
+        // 클라이언트가 먼저 끊기면 upstream 소켓을 정리한다(half-open 누수 방지).
+        clientSocket.on('close', () => {
+          upstream.destroy();
+          closeWs();
+        });
         clientSocket.write(buffer); // 101 응답(+초기 프레임) 전달
         clientSocket.pipe(upstream);
         upstream.pipe(clientSocket);
@@ -323,6 +444,11 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
   if (idleMs > 0) {
     setInterval(() => {
       pruneExpired();
+      // 진행 중인 연결이 있으면 유휴로 보지 않는다(활성 WS/스트리밍 강제 종료 방지).
+      if (activeConnections > 0) {
+        lastActivity = Date.now();
+        return;
+      }
       if (Date.now() - lastActivity < idleMs) return;
       log(`IDLE_SHUTDOWN after ${idleMs / 60000}min idle`);
       const tunnel = readTunnel();
