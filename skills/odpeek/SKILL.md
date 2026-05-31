@@ -1,6 +1,6 @@
 ---
 name: odpeek
-description: Open Design 작업물을 폰에서 보기 위해 로컬 웹 UI를 Tailscale tailnet에 노출한다. "폰에서 디자인 보기", "open design 모바일", "od 모바일", "odpeek" 등에서 사용.
+description: Open Design 작업물을 폰에서 보기 위해 로컬 웹 UI를 Tailscale(Wi-Fi) 또는 Cloudflare 터널(셀룰러, Basic 인증)로 노출한다. "폰에서 디자인 보기", "open design 모바일", "od 모바일", "odpeek" 등에서 사용.
 ---
 
 # odpeek
