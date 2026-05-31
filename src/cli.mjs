@@ -29,6 +29,13 @@ import {
   extractTrycloudflareUrl,
   isValidPort,
 } from './tunnel.mjs';
+import {
+  maskIp,
+  buildStatusJson,
+  buildDoctorJson,
+  buildSessionsJson,
+} from './output.mjs';
+import { buildSessionsView } from './sessions.mjs';
 
 // 패키지 메타(버전 출력용)를 루트 package.json에서 읽는다.
 const pkg = JSON.parse(
@@ -73,6 +80,7 @@ Commands:
   ip        tailnet IP 접속 주소 출력
   url       MagicDNS 이름 접속 주소 출력
   status    현재 노출 상태와 감지된 포트 출력
+  sessions  세션/연결 관측(읽기전용): 터널 uptime·TTL 잔여·인증 실패·잠금·고유 출발 IP(마스킹)
   doctor    환경 진단
 
 Options:
@@ -81,6 +89,7 @@ Options:
       --pattern <s>  OD 프로세스 매칭 패턴 (기본 ${DEFAULT_PATTERN})
       --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env ODPEEK_IDLE_MIN)
       --ttl <min>    터널 최대 수명(분, 0=비활성, 기본 ${DEFAULT_TTL_MIN}, env ODPEEK_TTL_MIN). 유휴와 별개로 활동 무관하게 강제 종료
+      --json         status/doctor/sessions 출력을 순수 JSON 한 줄로(파이프 안전). 비밀번호·전체 IP는 미포함
   -h, --help         도움말
   -v, --version      버전
 
@@ -124,6 +133,9 @@ function parseArgs(argv) {
     } else if (arg === '--ttl') {
       opts.ttlMin = Number(requireValue(argv, i, arg));
       i += 1;
+    } else if (arg === '--json') {
+      // status/doctor/sessions를 사람용 텍스트 대신 순수 JSON 한 줄로 출력한다(파이프 안전).
+      opts.json = true;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     } else if (arg === '-v' || arg === '--version') {
@@ -575,8 +587,68 @@ function cmdUrl(opts) {
   console.log(`http://${dns}:${opts.port}`);
 }
 
+/**
+ * Open Design 포트를 감지해 JSON envelope용 형태로 정규화한다(읽기 전용).
+ * 감지 성공이면 {pid, port}, 실패(미실행/다중 매칭/도구 부재)면 {detected:false, reason}.
+ * detectWebPort가 던지는 에러를 삼켜 read-only 명령이 중단되지 않게 한다.
+ * @param {string} pattern OD 프로세스 매칭 패턴
+ * @returns {{pid:number, port:number}|{detected:false, reason:string}}
+ */
+function detectOpenDesignForJson(pattern) {
+  try {
+    return detectWebPort(pattern);
+  } catch (error) {
+    return { detected: false, reason: error.message };
+  }
+}
+
+/**
+ * tailscale 상태를 JSON envelope용 안전 요약으로 파생한다(전체 IP·자격증명 미포함).
+ * BackendState와 MagicDNS 이름만 노출하고, tailnet IP는 maskIp로만(원본 미노출) 싣는다.
+ * tailscale 미설치/조회 실패 시 {installed:false}로 정직하게 표기한다.
+ * @returns {object} tailscale 안전 요약 블록
+ */
+function buildTailscaleSummary() {
+  const bin = resolveTailscaleBin();
+  if (!bin) return { installed: false };
+  let status = null;
+  try {
+    status = statusJson(bin);
+  } catch {
+    return { installed: true, backendState: 'unknown' };
+  }
+  const ip4 = selfIp4(status);
+  return {
+    installed: true,
+    backendState: status?.BackendState ?? 'unknown',
+    magicDnsName: selfDnsName(status),
+    // tailnet IP는 전체 노출 금지 — maskIp로만 싣는다(없으면 null).
+    ip4Masked: ip4 ? maskIp(ip4) : null,
+  };
+}
+
+/**
+ * status/doctor `--json` 빌더에 넘길 공통 입력을 구성한다(읽기 전용).
+ * tunnelState=readTunnel(), openDesign=감지 시도, tailscale=안전 요약, now=현재 시각.
+ * @param {object} opts CLI 옵션(pattern 사용)
+ * @returns {{tunnelState:object|null, openDesign:object, tailscale:object, now:number}}
+ */
+function gatherJsonInputs(opts) {
+  return {
+    tunnelState: readTunnel(),
+    openDesign: detectOpenDesignForJson(opts.pattern),
+    tailscale: buildTailscaleSummary(),
+    now: Date.now(),
+  };
+}
+
 /** 현재 노출 상태(serve + 터널)와 감지된 OD 포트를 출력한다. */
 function cmdStatus(opts) {
+  if (opts.json) {
+    // 순수 JSON 한 줄만 stdout으로 — 사람용 텍스트 경로는 실행하지 않는다(파이프 안전).
+    console.log(JSON.stringify(buildStatusJson(gatherJsonInputs(opts))));
+    return;
+  }
   const bin = resolveTailscaleBin();
   console.log('[tailscale serve]');
   console.log(bin ? serveStatusText(bin) : 'tailscale 미설치');
@@ -598,6 +670,11 @@ function cmdStatus(opts) {
 
 /** tailscale / OD / MagicDNS 환경을 점검해 체크리스트를 출력한다. */
 function cmdDoctor(opts) {
+  if (opts.json) {
+    // 순수 JSON 한 줄만 stdout으로 — 사람용 체크리스트 경로는 실행하지 않는다.
+    console.log(JSON.stringify(buildDoctorJson(gatherJsonInputs(opts))));
+    return;
+  }
   const bin = resolveTailscaleBin();
   let status = null;
   if (bin) {
@@ -626,6 +703,79 @@ function cmdDoctor(opts) {
   }
 }
 
+/**
+ * auth.log를 읽어 텍스트를 반환한다(읽기 전용). 파일이 없거나 읽기 실패면 빈 문자열.
+ * sessions는 read-only 진단이므로 로그 부재를 에러로 올리지 않고 graceful하게 처리한다.
+ * @returns {string} auth.log 전체 텍스트(없으면 '')
+ */
+function readAuthLogText() {
+  try {
+    return readFileSync(AUTH_LOG, 'utf8');
+  } catch {
+    return ''; // 미존재/권한 등 — 빈 로그로 간주(graceful)
+  }
+}
+
+/**
+ * 세션/연결 관측 정보를 출력한다(읽기 전용 — 상태 변경·파일 쓰기 없음).
+ *
+ * 표시(텍스트): 활성 터널 URL·uptime·TTL 잔여·최근 인증 실패 수·잠금 여부·고유 출발 IP(마스킹).
+ * [F1/Defect 3] idle 잔여는 도출 불가하므로 절대 표시하지 않는다(uptime·TTL 잔여만).
+ * 가장 최근 TUNNEL_KILL matched=false 기록이 있으면 잠재 고아 cloudflared 경고를 파생 표기한다.
+ * `--json`이면 buildSessionsJson으로 순수 JSON 한 줄만 출력한다(사람용 텍스트와 혼재 금지).
+ */
+function cmdSessions(opts) {
+  const tunnelState = readTunnel();
+  const authLogText = readAuthLogText();
+  const view = buildSessionsView({ tunnelState, authLogText, now: Date.now() });
+
+  if (opts.json) {
+    // 순수 JSON 한 줄만 stdout으로 — IP는 buildSessionsJson 내부 maskIp로만 노출된다.
+    const envelope = buildSessionsJson({
+      tunnelState,
+      sessions: view.sessions,
+      openDesign: detectOpenDesignForJson(opts.pattern),
+      now: Date.now(),
+    });
+    console.log(JSON.stringify(envelope));
+    return;
+  }
+
+  printSessionsText(view);
+}
+
+/**
+ * buildSessionsView 결과를 사람용 텍스트로 출력한다(cmdSessions의 텍스트 경로).
+ * raw IP는 절대 찍지 않고 maskIp를 거친 형태만 노출한다(§원칙 3).
+ * @param {object} view buildSessionsView 반환값
+ */
+function printSessionsText(view) {
+  const { tunnelState, timing, sessions, potentialOrphan, lastKillAttempt } = view;
+
+  console.log('[Cloudflare 터널]');
+  if (tunnelState?.cfPid && isAlive(tunnelState.cfPid)) {
+    console.log(`  실행 중 — ${tunnelState.url || '(URL 미확인)'}`);
+    // uptime·TTL 잔여만 표기한다(idle 잔여는 F1 하 도출 불가 → 미표시).
+    if (timing.uptimeSec !== null) console.log(`  uptime: ${timing.uptimeSec}초`);
+    if (timing.ttl) console.log(`  TTL 잔여: ${timing.ttl.remainingSec}초 (최대 ${timing.ttl.ttlMin}분)`);
+  } else {
+    console.log('  실행 중이 아님');
+  }
+
+  console.log('\n[인증 시도 요약]');
+  console.log(`  최근 인증 실패: ${sessions.recentAuthFailures}건`);
+  console.log(`  잠금 발동: ${sessions.lockouts}건${view.locked ? ' (현재 잠금 상태 차단 기록 있음)' : ''}`);
+  // 고유 출발 IP는 마스킹된 형태로만 노출한다(raw 미노출).
+  const maskedIps = [...sessions.uniqueSourceIps].map((ip) => maskIp(ip));
+  console.log(`  고유 출발 IP: ${maskedIps.length}개${maskedIps.length ? ` (${maskedIps.join(', ')})` : ''}`);
+  if (sessions.lastFailureAt) console.log(`  마지막 실패 시각: ${sessions.lastFailureAt}`);
+
+  // 증거 기반 잠재-고아 신호(가장 최근 kill 시도가 시그니처 불일치/ps 실패로 건너뛰어진 경우).
+  if (potentialOrphan) {
+    console.log(`\n  ⚠ 잠재 고아 cloudflared 가능(cfPid ${lastKillAttempt.cfPid}의 kill을 건너뜀) — odpeek off 권장`);
+  }
+}
+
 // 명령 이름 → 핸들러 매핑.
 const COMMANDS = {
   up: cmdUp,
@@ -635,6 +785,7 @@ const COMMANDS = {
   url: cmdUrl,
   status: cmdStatus,
   doctor: cmdDoctor,
+  sessions: cmdSessions,
   __authproxy: cmdAuthProxy,
 };
 
