@@ -1,6 +1,6 @@
 {
   "name": "odpeek",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "View Open Design artifacts on your phone by exposing the local web UI over Tailscale (Wi-Fi) or a Cloudflare tunnel (cellular).",
   "author": {
     "name": "Coden",
