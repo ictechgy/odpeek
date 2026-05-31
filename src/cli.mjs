@@ -46,6 +46,11 @@ const DEFAULT_AUTH_PORT = Number(process.env.ODPEEK_AUTH_PORT) || 8765;
 const DEFAULT_IDLE_MIN = process.env.ODPEEK_IDLE_MIN !== undefined
   ? Number(process.env.ODPEEK_IDLE_MIN)
   : 30;
+// 터널 TTL hard-cap(분). 0이면 비활성. idle과 별개로 활동 무관 절대 최대 수명을 강제해
+// 공개 노출 시간을 상한한다. env ODPEEK_TTL_MIN으로 기본값을 덮어쓸 수 있다.
+const DEFAULT_TTL_MIN = process.env.ODPEEK_TTL_MIN !== undefined
+  ? Number(process.env.ODPEEK_TTL_MIN)
+  : 0;
 // 인증 시도 로그 경로.
 const AUTH_LOG = join(homedir(), '.odpeek', 'auth.log');
 // 터널 모드 인증 프록시의 기본 사용자명(부모/자식이 같은 정의를 공유).
@@ -75,6 +80,7 @@ Options:
       --auth-port <n> 터널 인증 프록시 로컬 포트 (기본 ${DEFAULT_AUTH_PORT}, env ODPEEK_AUTH_PORT)
       --pattern <s>  OD 프로세스 매칭 패턴 (기본 ${DEFAULT_PATTERN})
       --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env ODPEEK_IDLE_MIN)
+      --ttl <min>    터널 최대 수명(분, 0=비활성, 기본 ${DEFAULT_TTL_MIN}, env ODPEEK_TTL_MIN). 유휴와 별개로 활동 무관하게 강제 종료
   -h, --help         도움말
   -v, --version      버전
 
@@ -98,6 +104,7 @@ function parseArgs(argv) {
     pattern: DEFAULT_PATTERN,
     authPort: DEFAULT_AUTH_PORT,
     idleMin: DEFAULT_IDLE_MIN,
+    ttlMin: DEFAULT_TTL_MIN,
     _: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -113,6 +120,9 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === '--idle') {
       opts.idleMin = Number(requireValue(argv, i, arg));
+      i += 1;
+    } else if (arg === '--ttl') {
+      opts.ttlMin = Number(requireValue(argv, i, arg));
       i += 1;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
@@ -142,6 +152,9 @@ function assertValidOpts(opts) {
   if (!Number.isFinite(opts.idleMin) || opts.idleMin < 0) {
     throw new Error(`--idle 값이 올바르지 않습니다. 0 이상이어야 합니다: ${opts.idleMin}`);
   }
+  if (!Number.isFinite(opts.ttlMin) || opts.ttlMin < 0) {
+    throw new Error(`--ttl 값이 올바르지 않습니다. 0 이상이어야 합니다: ${opts.ttlMin}`);
+  }
 }
 
 /**
@@ -151,6 +164,15 @@ function assertValidOpts(opts) {
  */
 function toIdleMs(idleMin) {
   return idleMin > 0 ? idleMin * 60000 : 0;
+}
+
+/**
+ * 검증된 ttlMin(분)을 밀리초로 변환한다(toIdleMs 형제).
+ * assertValidOpts가 0 이상 유한수임을 이미 보장하므로 여기서는 재검증하지 않는다.
+ * @returns {number} TTL hard-cap 밀리초(0이면 비활성)
+ */
+export function toTtlMs(ttlMin) {
+  return ttlMin > 0 ? ttlMin * 60000 : 0;
 }
 
 /** tailscale 바이너리를 확보하거나 설치 안내 에러를 던진다. */
@@ -218,11 +240,11 @@ function stopRunningTunnel() {
 }
 
 /** 인증 프록시(__authproxy)에 넘길 위치 인자 배열을 만든다(parseAuthProxyArgs와 대칭). */
-function buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile }) {
+function buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile, ttlMs }) {
   return [
     BIN_PATH, '__authproxy',
     String(authPort), String(targetPort),
-    String(idleMs), logFile,
+    String(idleMs), logFile, String(ttlMs),
   ];
 }
 
@@ -230,12 +252,13 @@ function buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile }) {
  * 인증 프록시를 분리 프로세스로 기동한다.
  * 자격증명(user/pass)은 argv 대신 환경변수로 넘긴다. argv는 `ps`/`/proc`로 같은
  * 머신의 다른 사용자에게 노출되지만, 환경변수는 프로세스 소유자만 읽을 수 있다.
+ * @param {number} ttlMs TTL hard-cap 밀리초(0이면 비활성). 자식 진입점에서 재검증된다.
  */
-function spawnAuthProxy(authPort, targetPort, creds, idleMs) {
+function spawnAuthProxy(authPort, targetPort, creds, idleMs, ttlMs) {
   const proxyLog = openSync(`${CF_LOG}.proxy`, 'a');
   const child = spawn(
     process.execPath,
-    buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile: AUTH_LOG }),
+    buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile: AUTH_LOG, ttlMs }),
     {
       detached: true,
       stdio: ['ignore', proxyLog, proxyLog],
@@ -335,12 +358,16 @@ function cleanupTunnelChildren(children) {
 }
 
 /** 터널 노출 성공 결과를 출력한다. */
-function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin }) {
+function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin, ttlMs, ttlMin }) {
   console.log(`OD 웹 UI(localhost:${targetPort}) → Cloudflare 터널 노출 완료.\n`);
   console.log(`  폰에서 열기(셀룰러 OK):  ${url}`);
   console.log(`  로그인 — 아이디: ${user}   비밀번호: ${pass}\n`);
   console.log('  ※ 공개 URL이지만 Basic 인증·무차별대입 잠금·보안 헤더로 보호됩니다.');
   console.log(`  ※ ${idleMs ? `${idleMin}분 유휴 시 자동 종료` : '유휴 자동종료 비활성'} · 시도 로그: ${AUTH_LOG}`);
+  // TTL 활성 시 절대 최대 수명을 안내한다(유휴와 별개로 활동과 무관하게 강제 종료됨).
+  if (ttlMs) {
+    console.log(`  ※ 최대 ${ttlMin}분 후 자동 종료(유휴와 별개, 활동 무관)`);
+  }
   console.log('  ※ URL은 실행마다 바뀝니다. 해제: odpeek off');
 }
 
@@ -360,6 +387,7 @@ async function cmdTunnel(opts) {
   const user = process.env.ODPEEK_USER || DEFAULT_AUTH_USER;
   const pass = process.env.ODPEEK_PASS || randomBytes(9).toString('base64url');
   const idleMs = toIdleMs(opts.idleMin);
+  const ttlMs = toTtlMs(opts.ttlMin);
 
   stopRunningTunnel();
   ensureDir();
@@ -368,7 +396,10 @@ async function cmdTunnel(opts) {
   let cf = null;
   try {
     // 1) 인증 프록시 기동 → 실제로 401 챌린지에 응답할 때까지 검증.
-    proxy = spawnAuthProxy(opts.authPort, targetPort, { user, pass }, idleMs);
+    //    [단일 t0] proxy의 TTL setTimeout 기준 시각(spawn 시점)을 startedAt에 그대로 쓰기 위해
+    //    spawn 직전에 한 번만 캡처한다 → uptime·TTL 잔여 계산이 실제 발화 시각과 정합한다.
+    const proxyStartedAt = Date.now();
+    proxy = spawnAuthProxy(opts.authPort, targetPort, { user, pass }, idleMs, ttlMs);
     await waitForProxyReady(opts.authPort, proxy);
 
     // 2) 프록시가 확인된 뒤에만 cloudflared 터널을 연다.
@@ -387,8 +418,10 @@ async function cmdTunnel(opts) {
       odPid,
       user,
       url,
+      startedAt: proxyStartedAt,
+      ttlMs,
     });
-    printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin });
+    printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin, ttlMs, ttlMin: opts.ttlMin });
   } catch (error) {
     // 부분 기동 상태를 남기지 않는다: 띄운 자식과 상태 파일을 정리하고 재던진다.
     cleanupTunnelChildren([proxy, cf]);
@@ -397,19 +430,22 @@ async function cmdTunnel(opts) {
 }
 
 /** __authproxy 위치 인자를 구조화해 파싱한다(buildAuthProxyArgs와 대칭). */
-function parseAuthProxyArgs(positional) {
-  const [, listenPort, targetPort, idleMs, logFile] = positional;
+export function parseAuthProxyArgs(positional) {
+  const [, listenPort, targetPort, idleMs, logFile, ttlMs] = positional;
   return {
     listenPort: Number(listenPort),
     targetPort: Number(targetPort),
     idleMs: Number(idleMs) || 0,
     logFile,
+    // [P2] ttlMs는 Number()||0(음수 통과)을 쓰지 않고 비음수 정수만 받는다.
+    // 5-인자 하위호환: positional[5]===undefined → Number(undefined)=NaN → Number.isInteger(NaN)=false → 0.
+    ttlMs: (Number.isInteger(Number(ttlMs)) && Number(ttlMs) >= 0) ? Number(ttlMs) : 0,
   };
 }
 
 /** (내부용) 분리 프로세스로 호출되어 Basic 인증 프록시를 돌린다. */
 function cmdAuthProxy(opts) {
-  const { listenPort, targetPort, idleMs, logFile } = parseAuthProxyArgs(opts._);
+  const { listenPort, targetPort, idleMs, logFile, ttlMs } = parseAuthProxyArgs(opts._);
   // 내부 진입점도 자기완결적으로 검증한다(직접 호출/오용 시 NaN 포트 전파 차단).
   if (!isValidPort(listenPort) || !isValidPort(targetPort)) {
     console.error(`인증 프록시 포트가 올바르지 않습니다: listen=${listenPort}, target=${targetPort}`);
@@ -423,12 +459,92 @@ function cmdAuthProxy(opts) {
     console.error('자격증명(ODPEEK_PASS)이 비어 있어 인증 프록시를 시작하지 않습니다.');
     process.exit(1);
   }
-  runAuthProxy(listenPort, targetPort, user, pass, { idleMs, logFile });
+  runAuthProxy(listenPort, targetPort, user, pass, { idleMs, logFile, ttlMs });
+}
+
+/**
+ * 살아있는 cloudflared 후보 PID 목록을 열거한다(고아 회수용).
+ * 1차로 `pgrep -f cloudflared`, 비정상 종료/빈 결과 시 폴백으로 `ps`(processMatches가 쓰는
+ * 동일 메커니즘)를 쓴다. 두 열거기가 모두 실패하면 null을 반환해 호출부가 report-only로
+ * 강등하게 한다(throw 금지·추측 kill 금지). pgrep -f의 macOS/Linux 매칭 차이는 후보 수집에만
+ * 영향을 주며, 최종 odpeek-소유 판정은 항상 processMatches(협소 시그니처)가 단독으로 내린다.
+ * @returns {number[]|null} 후보 PID 배열(빈 배열 포함), 두 열거기 모두 실패 시 null
+ */
+export function listCloudflaredCandidates() {
+  // 1차: pgrep -f cloudflared (후보 PID 수집 전용 — 판정에 쓰지 않음).
+  try {
+    const out = execFileSync('pgrep', ['-f', 'cloudflared'], { encoding: 'utf8' });
+    const pids = out.split('\n').map((line) => Number(line.trim())).filter((pid) => Number.isInteger(pid) && pid > 0);
+    return pids;
+  } catch {
+    // pgrep 실패(매치 없음은 exit 1 → 여기로 옴)나 부재 시 폴백으로 넘어간다.
+  }
+  // 2차(폴백): ps로 전체 프로세스를 열거해 cloudflared 후보를 추린다.
+  try {
+    const out = execFileSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
+    const pids = [];
+    for (const line of out.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed.includes('cloudflared')) continue;
+      const pid = Number(trimmed.split(/\s+/)[0]);
+      if (Number.isInteger(pid) && pid > 0) pids.push(pid);
+    }
+    return pids;
+  } catch {
+    // pgrep·ps 둘 다 실패 → 열거 불가. report-only 강등 신호로 null 반환.
+    return null;
+  }
+}
+
+/**
+ * state가 소실(readTunnel()===null)됐는데 cloudflared만 살아남은 고아를 회수한다(§2.5).
+ * 기존 stopRunningTunnel(readTunnel-valid 경로)과 중복되지 않는 추가 경로다.
+ * 발견한 cloudflared 후보 중 odpeek 고유 협소 시그니처(`--url http://localhost:${authPort}`)에
+ * 일치하는 것만 auto-kill하고, 불일치 cloudflared는 report-only로 안내만 한다(무차별 kill 금지).
+ *
+ * 후보 열거기는 기본 인자로 주입한다(exitFn 패턴과 동일한 정신). 프로덕션 기본 경로는
+ * 기본값 listCloudflaredCandidates를 그대로 쓰므로 동작이 불변이다. 테스트는
+ * `{ listCandidates: () => null }`로 두 열거기 동시 실패를, `() => [pid]`로 후보 주입을 구동한다.
+ * @param {{ listCandidates?: () => (number[]|null) }} [options] 후보 열거기 주입 hook(테스트 전용)
+ */
+export function reconcileOrphanTunnel({ listCandidates = listCloudflaredCandidates } = {}) {
+  // 진짜 새 경로만 처리한다: state가 살아 있으면 stopRunningTunnel이 이미 정리했다.
+  if (readTunnel() !== null) return;
+
+  // authPort는 state가 없으므로 기본값(env 또는 8765)을 쓴다.
+  const authPort = Number(process.env.ODPEEK_AUTH_PORT) || 8765;
+  const signature = `--url http://localhost:${authPort}`;
+
+  const candidates = listCandidates();
+  if (candidates === null) {
+    // 두 열거기 동시 실패 → 크래시 없이 report-only no-kill + 수동 점검 힌트(throw·추측 kill 금지).
+    console.log("프로세스 목록을 열거하지 못했습니다. 'ps aux | grep cloudflared'로 잔존 터널을 직접 확인하세요.");
+    return;
+  }
+
+  for (const pid of candidates) {
+    if (!isAlive(pid)) continue;
+    // 최종 판정은 항상 processMatches(협소 시그니처)가 단독으로 내린다.
+    if (processMatches(pid, signature)) {
+      // odpeek가 띄운 고아임이 확정 → auto-kill(단일-호스트 신뢰모델 내 안전).
+      try {
+        process.kill(pid);
+        console.log(`잔존 odpeek 터널(cloudflared PID ${pid})을 정리했습니다.`);
+      } catch {
+        // 이미 종료됨
+      }
+    } else {
+      // 협소 시그니처 불일치(타인/다른 도구의 cloudflared) → report-only, kill 금지.
+      console.log(`odpeek 시그니처와 일치하지 않는 cloudflared(PID ${pid})를 발견했습니다. odpeek가 띄운 것이 아니므로 종료하지 않습니다.`);
+    }
+  }
 }
 
 /** 모든 노출(serve + 터널)을 해제한다. */
 function cmdOff(opts) {
   stopRunningTunnel();
+  // state 소실 + 고아 cloudflared 생존 경로를 추가로 회수한다(협소 시그니처 auto-kill, §2.5).
+  reconcileOrphanTunnel();
   const bin = resolveTailscaleBin();
   if (bin) {
     try {
