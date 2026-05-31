@@ -43,7 +43,13 @@ export function isValidPort(value) {
   return isPositiveInt(value) && value <= 65535;
 }
 
-/** 터널 상태(pid/포트/url 등)를 소유자 전용(0600)으로 저장한다. */
+/**
+ * 터널 상태(pid/포트/url 등)를 소유자 전용(0600)으로 저장한다.
+ * 임의 객체를 그대로 직렬화하므로 호출부가 넘기는 선택 필드도 함께 기록된다.
+ * - `startedAt`(epoch ms 양의 정수): proxy spawn 직전에 캡처한 단일 t0.
+ *   proxy의 TTL `setTimeout`과 동일 기준이라 uptime·TTL 잔여 계산이 발화 시각과 정합한다.
+ * - `ttlMs`(0 이상 정수, 선택): TTL hard-cap 절대 데드라인(분→ms). 0이면 비활성.
+ */
 export function saveTunnel(state) {
   ensureDir();
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -77,6 +83,10 @@ export function readTunnel() {
   if (parsed.url !== undefined && parsed.url !== null && !TRYCLOUDFLARE_URL.test(parsed.url)) {
     return null;
   }
+  // startedAt/ttlMs는 v0.2에서 추가된 선택 필드다(단일 t0·TTL 잔여 계산용).
+  // 선택 필드라 값이 있을 때만 검증하므로, 두 필드가 없는 구버전 tunnel.json은 그대로 통과한다(하위호환).
+  if (parsed.startedAt !== undefined && !isPositiveInt(parsed.startedAt)) return null;
+  if (parsed.ttlMs !== undefined && !(Number.isInteger(parsed.ttlMs) && parsed.ttlMs >= 0)) return null;
   return parsed;
 }
 

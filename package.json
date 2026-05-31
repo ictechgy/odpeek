@@ -4,7 +4,7 @@
   "description": "Expose Open Design's local web UI to your phone over Tailscale (Wi-Fi) or a Cloudflare tunnel (cellular) — a tiny zero-dependency CLI.",
   "type": "module",
   "scripts": {
-    "test": "node test/smoke.mjs"
+    "test": "node test/run-all.mjs"
   },
   "bin": {
     "odpeek": "bin/odpeek.mjs"
