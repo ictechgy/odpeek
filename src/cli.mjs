@@ -509,6 +509,25 @@ function cmdAuthProxy(opts) {
 }
 
 /**
+ * 후보 경로 목록을 순서대로 시도해 실행 가능한 첫 번째 절대 경로(또는 PATH 이름)를 반환한다.
+ * resolveCloudflared와 동일한 정신으로 신뢰 가능한 절대 경로를 먼저 시도해 PATH 하이재킹을 완화한다.
+ * @param {string[]} candidates 시도할 경로 목록(절대 경로 우선, PATH 이름 최후)
+ * @returns {string} 실행 가능한 첫 번째 경로 또는 마지막 후보(폴백)
+ */
+function resolveBin(candidates) {
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ['--version'], { stdio: 'ignore' });
+      return candidate;
+    } catch {
+      // 다음 후보 시도
+    }
+  }
+  // 모든 절대 경로 실패 시 마지막 후보(PATH 이름)로 폴백.
+  return candidates[candidates.length - 1];
+}
+
+/**
  * 살아있는 cloudflared 후보 PID 목록을 열거한다(고아 회수용).
  * 1차로 `pgrep -f cloudflared`, 비정상 종료/빈 결과 시 폴백으로 `ps`(processMatches가 쓰는
  * 동일 메커니즘)를 쓴다. 두 열거기가 모두 실패하면 null을 반환해 호출부가 report-only로
@@ -517,9 +536,13 @@ function cmdAuthProxy(opts) {
  * @returns {number[]|null} 후보 PID 배열(빈 배열 포함), 두 열거기 모두 실패 시 null
  */
 export function listCloudflaredCandidates() {
+  // 절대 경로를 먼저 시도해 PATH 하이재킹을 완화한다(resolveCloudflared와 동일 정신).
+  const pgrepBin = resolveBin(['/usr/bin/pgrep', 'pgrep']);
+  const psBin = resolveBin(['/bin/ps', '/usr/bin/ps', 'ps']);
+
   // 1차: pgrep -f cloudflared (후보 PID 수집 전용 — 판정에 쓰지 않음).
   try {
-    const out = execFileSync('pgrep', ['-f', 'cloudflared'], { encoding: 'utf8' });
+    const out = execFileSync(pgrepBin, ['-f', 'cloudflared'], { encoding: 'utf8' });
     const pids = out.split('\n').map((line) => Number(line.trim())).filter((pid) => Number.isInteger(pid) && pid > 0);
     return pids;
   } catch {
@@ -527,7 +550,7 @@ export function listCloudflaredCandidates() {
   }
   // 2차(폴백): ps로 전체 프로세스를 열거해 cloudflared 후보를 추린다.
   try {
-    const out = execFileSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
+    const out = execFileSync(psBin, ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
     const pids = [];
     for (const line of out.split('\n')) {
       const trimmed = line.trim();
@@ -765,9 +788,12 @@ function readAuthLogText() {
  * `--json`이면 buildSessionsJson으로 순수 JSON 한 줄만 출력한다(사람용 텍스트와 혼재 금지).
  */
 function cmdSessions(opts) {
+  // [단일 t0] buildSessionsView와 buildSessionsJson에 동일한 기준 시각을 넘겨
+  // uptime·TTL 잔여 계산이 두 경로에서 정합하도록 한 번만 캡처한다.
+  const now = Date.now();
   const tunnelState = readTunnel();
   const authLogText = readAuthLogText();
-  const view = buildSessionsView({ tunnelState, authLogText, now: Date.now() });
+  const view = buildSessionsView({ tunnelState, authLogText, now });
 
   if (opts.json) {
     // 순수 JSON 한 줄만 stdout으로 — IP는 buildSessionsJson 내부 maskIp로만 노출된다.
@@ -775,7 +801,7 @@ function cmdSessions(opts) {
       tunnelState,
       sessions: view.sessions,
       openDesign: detectOpenDesignForJson(opts.pattern),
-      now: Date.now(),
+      now,
     });
     console.log(JSON.stringify(envelope));
     return;

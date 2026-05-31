@@ -435,8 +435,7 @@ const GF_LOG = new Array(256).fill(0);
     value <<= 1; // ×2 (생성원 g=2)
     if (value & 0x100) value ^= 0x11d; // 원시 다항식으로 모듈러
   }
-  // 지수 255~ 는 0~ 와 동일(주기 255). 곱셈 시 인덱스 오버플로 방지용으로 채워 둔다.
-  for (let i = 255; i < 256; i += 1) GF_EXP[i] = GF_EXP[i - 255];
+  // GF_EXP는 인덱스 0..254만 쓰임(gfMultiply가 % 255로 인덱싱), 255 슬롯 불필요.
 })();
 
 /** GF(256) 곱셈. 0이면 0, 아니면 로그 덧셈(mod 255) 후 역로그. */
@@ -923,6 +922,8 @@ function placeVersionBits(modules, size, versionBits) {
  * @throws {Error} maxVersion으로도 담을 수 없으면 throw
  */
 export function encodeQrMatrix(text, { ecc = 'L', maxVersion = 10 } = {}) {
+  // 빈 문자열 가드: node-qrcode 오라클의 빈 입력 throw 동작과 일치시킨다.
+  if (typeof text !== 'string' || text.length === 0) throw new Error('QR로 인코딩할 텍스트가 비어 있습니다.');
   void ecc; // 현재 레벨 L 고정(인터페이스 호환을 위해 인자만 수용)
   // node-qrcode 호환 세그먼트 최적화로 version·세그먼트를 결정한다(byte 단일이 아님).
   const { version, segments } = chooseVersionAndSegments(text, maxVersion);

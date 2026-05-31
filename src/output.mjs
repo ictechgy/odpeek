@@ -41,10 +41,23 @@ function isPositiveInt(value) {
 export function maskIp(ip) {
   if (typeof ip !== 'string' || ip.length === 0) return 'x.x.x.x';
   // IPv6는 콜론을 포함한다(IPv4-mapped 형태 '::ffff:1.2.3.4' 포함).
+  // 압축(::) 주소에서 끝의 낮은 hextet이 노출되지 않도록, 콜론으로 단순 분리하지 않고
+  // 주소 앞부분(첫 번째 '::'이나 주소 끝 이전)에서 프리픽스 hextet만 추출한다.
+  // 예: 'fe80::1' → split(':') = ['fe80','','1'] → 앞에서 비어있지 않은 hextet 최대 2개 = ['fe80']
+  //     → 'fe80:x' (끝 '1' 노출 없음)
+  //     '2001:db8::1' → ['2001','db8','','1'] → ['2001','db8'] → '2001:db8:x'
+  //     '2001:db8:abcd:0012::1' → ['2001','db8','abcd','0012','','1'] → ['2001','db8'] → '2001:db8:x'
   if (ip.includes(':')) {
-    const hextets = ip.split(':').filter((part) => part.length > 0);
-    const head = hextets.slice(0, 2).join(':');
-    return head ? `${head}:x` : 'x';
+    // split(':')에서 빈 문자열이 아닌 앞 1~2개 hextet만 프리픽스로 사용한다.
+    // 빈 항목('::' 의 '' 부분)은 주소 압축 경계이므로 그 이전까지만 안전하게 쓴다.
+    const parts = ip.split(':');
+    const prefix = [];
+    for (const part of parts) {
+      if (part.length === 0) break; // '::' 경계 도달 → 이후는 낮은 hextet이므로 중단
+      prefix.push(part);
+      if (prefix.length === 2) break; // 최대 2 hextet
+    }
+    return prefix.length > 0 ? `${prefix.join(':')}:x` : 'x';
   }
   // IPv4: 점으로 분리해 앞 2옥텟만 남긴다.
   const octets = ip.split('.');

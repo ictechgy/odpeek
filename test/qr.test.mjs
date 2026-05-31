@@ -86,6 +86,28 @@ function testMaxVersionThrows() {
   console.log('PASS (c): maxVersion(v10) 초과 → throw / 경계 입력은 정상');
 }
 
+// (c-2) 빈 문자열 입력 → throw(방어적 가드 + 오라클 node-qrcode 동작 일치).
+function testEmptyStringThrows() {
+  // 빈 문자열은 QR 인코딩 불가 — 명확한 에러를 던져야 한다.
+  assert.throws(
+    () => encodeQrMatrix('', { ecc: 'L' }),
+    /비어/,
+    '빈 문자열은 throw해야 함',
+  );
+  // 비문자열(undefined/null)도 동일하게 throw해야 한다.
+  assert.throws(
+    () => encodeQrMatrix(undefined),
+    /비어/,
+    'undefined 입력은 throw해야 함',
+  );
+  assert.throws(
+    () => encodeQrMatrix(null),
+    /비어/,
+    'null 입력은 throw해야 함',
+  );
+  console.log('PASS (c-2): 빈 문자열/비문자열 입력 → throw');
+}
+
 // (d) renderQrToTerminal: 알려진 작은 행렬 → 알려진 문자열(invert on/off), quiet zone 반영.
 function testRenderKnownMatrix() {
   // 2x2 체커보드 행렬. true=dark.
@@ -159,6 +181,7 @@ function main() {
   testGoldenCellByCell();
   testMaskDeterminism();
   testMaxVersionThrows();
+  testEmptyStringThrows();
   testRenderKnownMatrix();
   testNoRuntimeDependency();
   console.log('\n모든 QR 인코더 테스트 통과 ✅');

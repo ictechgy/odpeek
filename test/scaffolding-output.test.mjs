@@ -104,15 +104,31 @@ function testMaskIp() {
       `마스킹 결과에 네 번째 옥텟 ${fourthOctet}이 노출되면 안 됨: ${masked}`);
   }
 
-  // IPv6도 합리적으로 축약되어 뒤쪽 hextet이 노출되지 않아야 함.
+  // IPv6: 압축(::) 주소에서 끝의 낮은 hextet이 절대 노출되면 안 된다.
+  // fe80::1 → 끝 '1'(인터페이스 ID)이 노출되면 안 됨 → 'fe80:x'
+  const fe80 = maskIp('fe80::1');
+  assert.equal(fe80, 'fe80:x', 'fe80::1 → fe80:x (끝 인터페이스 ID 미노출)');
+  assert.doesNotMatch(fe80, /\b1\b/, 'fe80::1 마스킹 결과에 끝 hextet 1 미노출');
+
+  // 2001:db8::1 → 끝 '1'이 노출되면 안 됨 → '2001:db8:x'
+  const db8 = maskIp('2001:db8::1');
+  assert.equal(db8, '2001:db8:x', '2001:db8::1 → 2001:db8:x (끝 hextet 미노출)');
+  assert.doesNotMatch(db8, /\b1\b/, '2001:db8::1 마스킹 결과에 끝 hextet 1 미노출');
+
+  // 긴 완전 전개 주소도 앞 2 hextet만 남기고 나머지 미노출.
   const v6 = maskIp('2001:db8:abcd:0012:0000:0000:0000:0001');
-  assert.match(v6, /^2001:db8:x$/, 'IPv6는 앞 2 hextet만 남기고 축약');
+  assert.equal(v6, '2001:db8:x', 'IPv6 완전 전개 → 앞 2 hextet만 남기고 축약');
   assert.doesNotMatch(v6, /abcd|0012|0001/, 'IPv6 뒤쪽 hextet 미노출');
+
+  // ::1 (루프백) → 프리픽스 hextet이 없으므로 'x'
+  const loopback = maskIp('::1');
+  assert.equal(loopback, 'x', '::1(루프백) → x (끝 1 미노출)');
+  assert.doesNotMatch(loopback, /\b1\b/, '::1 마스킹 결과에 1 미노출');
 
   // 비정상 입력도 raw를 반환하지 않음.
   assert.equal(maskIp(''), 'x.x.x.x', '빈 문자열 → 기본 마스크');
   assert.equal(maskIp(undefined), 'x.x.x.x', '비문자열 → 기본 마스크');
-  console.log('PASS (d): maskIp가 전체 옥텟을 노출하지 않음(IPv4/IPv6/비정상)');
+  console.log('PASS (d): maskIp가 전체 옥텟을 노출하지 않음(IPv4/IPv6 압축·완전전개/비정상)');
 }
 
 // (e) buildStatusJson / buildSessionsJson 출력에 비밀번호·raw IP·userinfo 부재.
