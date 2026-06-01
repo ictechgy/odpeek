@@ -6,8 +6,8 @@
 class Odpeek < Formula
   desc "Expose Open Design's local web UI to your phone via Tailscale or a Cloudflare tunnel"
   homepage "https://github.com/ictechgy/odpeek"
-  url "https://registry.npmjs.org/odpeek/-/odpeek-0.1.1.tgz"
-  sha256 "9e62d1bb244b7af41d176cc81938123245e8407b8604da0145e074e328008043"
+  url "https://registry.npmjs.org/odpeek/-/odpeek-0.2.0.tgz"
+  sha256 "ad093b3bd26fb832d71a3c24cdca8be51acd4eee8fce702ff7aca34ecfcc6f4a"
   license "MIT"
 
   depends_on "node"
