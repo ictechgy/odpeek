@@ -29,6 +29,14 @@ import {
   extractTrycloudflareUrl,
   isValidPort,
 } from './tunnel.mjs';
+import {
+  maskIp,
+  buildStatusJson,
+  buildDoctorJson,
+  buildSessionsJson,
+} from './output.mjs';
+import { buildSessionsView } from './sessions.mjs';
+import { encodeQrMatrix, renderQrToTerminal } from './qr.mjs';
 
 // 패키지 메타(버전 출력용)를 루트 package.json에서 읽는다.
 const pkg = JSON.parse(
@@ -46,6 +54,11 @@ const DEFAULT_AUTH_PORT = Number(process.env.ODPEEK_AUTH_PORT) || 8765;
 const DEFAULT_IDLE_MIN = process.env.ODPEEK_IDLE_MIN !== undefined
   ? Number(process.env.ODPEEK_IDLE_MIN)
   : 30;
+// 터널 TTL hard-cap(분). 0이면 비활성. idle과 별개로 활동 무관 절대 최대 수명을 강제해
+// 공개 노출 시간을 상한한다. env ODPEEK_TTL_MIN으로 기본값을 덮어쓸 수 있다.
+const DEFAULT_TTL_MIN = process.env.ODPEEK_TTL_MIN !== undefined
+  ? Number(process.env.ODPEEK_TTL_MIN)
+  : 0;
 // 인증 시도 로그 경로.
 const AUTH_LOG = join(homedir(), '.odpeek', 'auth.log');
 // 터널 모드 인증 프록시의 기본 사용자명(부모/자식이 같은 정의를 공유).
@@ -68,6 +81,7 @@ Commands:
   ip        tailnet IP 접속 주소 출력
   url       MagicDNS 이름 접속 주소 출력
   status    현재 노출 상태와 감지된 포트 출력
+  sessions  세션/연결 관측(읽기전용): 터널 uptime·TTL 잔여·인증 실패·잠금·고유 출발 IP(마스킹)
   doctor    환경 진단
 
 Options:
@@ -75,6 +89,10 @@ Options:
       --auth-port <n> 터널 인증 프록시 로컬 포트 (기본 ${DEFAULT_AUTH_PORT}, env ODPEEK_AUTH_PORT)
       --pattern <s>  OD 프로세스 매칭 패턴 (기본 ${DEFAULT_PATTERN})
       --idle <min>   터널 유휴 자동 종료(분, 0=비활성, 기본 ${DEFAULT_IDLE_MIN}, env ODPEEK_IDLE_MIN)
+      --ttl <min>    터널 최대 수명(분, 0=비활성, 기본 ${DEFAULT_TTL_MIN}, env ODPEEK_TTL_MIN). 유휴와 별개로 활동 무관하게 강제 종료
+      --json         status/doctor/sessions 출력을 순수 JSON 한 줄로(파이프 안전). 비밀번호·전체 IP는 미포함
+      --no-qr        tunnel/ip/url 명령의 QR 코드 출력을 끈다(기본은 출력)
+      --qr-invert    QR 명암을 반전한다(밝은 배경 터미널에서 스캔 시 사용)
   -h, --help         도움말
   -v, --version      버전
 
@@ -98,6 +116,7 @@ function parseArgs(argv) {
     pattern: DEFAULT_PATTERN,
     authPort: DEFAULT_AUTH_PORT,
     idleMin: DEFAULT_IDLE_MIN,
+    ttlMin: DEFAULT_TTL_MIN,
     _: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -114,6 +133,21 @@ function parseArgs(argv) {
     } else if (arg === '--idle') {
       opts.idleMin = Number(requireValue(argv, i, arg));
       i += 1;
+    } else if (arg === '--ttl') {
+      opts.ttlMin = Number(requireValue(argv, i, arg));
+      i += 1;
+    } else if (arg === '--json') {
+      // status/doctor/sessions를 사람용 텍스트 대신 순수 JSON 한 줄로 출력한다(파이프 안전).
+      opts.json = true;
+    } else if (arg === '--no-qr') {
+      // QR 출력을 끈다. 기본은 켜짐이므로 이 플래그로 비활성화한다.
+      opts.noQr = true;
+    } else if (arg === '--qr-invert') {
+      // 밝은 배경 터미널에서 QR 명암을 반전해 스캔 가능하게 한다.
+      opts.qrInvert = true;
+    } else if (arg === '--qr') {
+      // QR을 강제 활성화한다(기본이 켜짐이라 사실상 no-op이지만 명시적 사용 허용).
+      opts.noQr = false;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     } else if (arg === '-v' || arg === '--version') {
@@ -130,7 +164,7 @@ function parseArgs(argv) {
  * 잘못된 값(NaN/0/음수/범위 초과)이 listen·터널 인자로 무음 전파되어 인증 프록시
  * 우회나 진단 불가 실패로 이어지는 것을 막는다.
  */
-function assertValidOpts(opts) {
+export function assertValidOpts(opts) {
   for (const [name, value] of [['--port', opts.port], ['--auth-port', opts.authPort]]) {
     if (!Number.isInteger(value) || value < 1 || value > 65535) {
       throw new Error(`${name} 값이 올바르지 않습니다. 1~65535 정수여야 합니다: ${value}`);
@@ -142,6 +176,16 @@ function assertValidOpts(opts) {
   if (!Number.isFinite(opts.idleMin) || opts.idleMin < 0) {
     throw new Error(`--idle 값이 올바르지 않습니다. 0 이상이어야 합니다: ${opts.idleMin}`);
   }
+  // [분수 --ttl 계약 불일치] ttlMin은 0 이상의 정수(분)만 허용한다. 분수는 parseAuthProxyArgs가
+  // 정수 ms만 받아 0(비활성)으로 묻히므로, 진입점에서 명확히 거부해 계약을 일치시킨다.
+  if (!Number.isInteger(opts.ttlMin) || opts.ttlMin < 0) {
+    throw new Error(`--ttl은 0 이상의 정수(분)여야 합니다: ${opts.ttlMin}`);
+  }
+  // [setTimeout 오버플로] safeTtlMs가 2^31-1(2147483647ms)을 넘으면 Node setTimeout이 오버플로해
+  // 즉시 발화 → 큰 --ttl이 터널을 즉시 종료시킨다. 상한을 진입점에서 막는다(authProxy 클램프와 이중 방어).
+  if (toTtlMs(opts.ttlMin) > 2147483647) {
+    throw new Error(`--ttl이 너무 큽니다. 최대 약 35791분(~24.8일)까지 가능합니다: ${opts.ttlMin}`);
+  }
 }
 
 /**
@@ -151,6 +195,15 @@ function assertValidOpts(opts) {
  */
 function toIdleMs(idleMin) {
   return idleMin > 0 ? idleMin * 60000 : 0;
+}
+
+/**
+ * 검증된 ttlMin(분)을 밀리초로 변환한다(toIdleMs 형제).
+ * assertValidOpts가 0 이상 유한수임을 이미 보장하므로 여기서는 재검증하지 않는다.
+ * @returns {number} TTL hard-cap 밀리초(0이면 비활성)
+ */
+export function toTtlMs(ttlMin) {
+  return ttlMin > 0 ? ttlMin * 60000 : 0;
 }
 
 /** tailscale 바이너리를 확보하거나 설치 안내 에러를 던진다. */
@@ -218,11 +271,11 @@ function stopRunningTunnel() {
 }
 
 /** 인증 프록시(__authproxy)에 넘길 위치 인자 배열을 만든다(parseAuthProxyArgs와 대칭). */
-function buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile }) {
+function buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile, ttlMs }) {
   return [
     BIN_PATH, '__authproxy',
     String(authPort), String(targetPort),
-    String(idleMs), logFile,
+    String(idleMs), logFile, String(ttlMs),
   ];
 }
 
@@ -230,12 +283,13 @@ function buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile }) {
  * 인증 프록시를 분리 프로세스로 기동한다.
  * 자격증명(user/pass)은 argv 대신 환경변수로 넘긴다. argv는 `ps`/`/proc`로 같은
  * 머신의 다른 사용자에게 노출되지만, 환경변수는 프로세스 소유자만 읽을 수 있다.
+ * @param {number} ttlMs TTL hard-cap 밀리초(0이면 비활성). 자식 진입점에서 재검증된다.
  */
-function spawnAuthProxy(authPort, targetPort, creds, idleMs) {
+function spawnAuthProxy(authPort, targetPort, creds, idleMs, ttlMs) {
   const proxyLog = openSync(`${CF_LOG}.proxy`, 'a');
   const child = spawn(
     process.execPath,
-    buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile: AUTH_LOG }),
+    buildAuthProxyArgs({ authPort, targetPort, idleMs, logFile: AUTH_LOG, ttlMs }),
     {
       detached: true,
       stdio: ['ignore', proxyLog, proxyLog],
@@ -334,14 +388,38 @@ function cleanupTunnelChildren(children) {
   clearTunnel();
 }
 
+/**
+ * URL을 QR 코드로 인코딩해 터미널에 출력한다.
+ * v10(ECC L) 한도 초과 시 크래시 없이 안내 메시지만 출력한다.
+ * URL만 인코딩하며, 자격증명(userinfo)은 절대 포함하지 않는다.
+ * @param {string} url 인코딩할 URL(자격증명 미포함)
+ * @param {{ invert?: boolean }} options
+ */
+function printQr(url, { invert = false } = {}) {
+  try {
+    const matrix = encodeQrMatrix(url, { ecc: 'L' });
+    console.log(renderQrToTerminal(matrix, { invert, quiet: 4 }));
+  } catch {
+    console.log('  (QR 생략: URL이 너무 길어 v10 한도를 초과했습니다)');
+  }
+}
+
 /** 터널 노출 성공 결과를 출력한다. */
-function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin }) {
+function printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin, ttlMs, ttlMin, showQrCaveat }) {
   console.log(`OD 웹 UI(localhost:${targetPort}) → Cloudflare 터널 노출 완료.\n`);
   console.log(`  폰에서 열기(셀룰러 OK):  ${url}`);
   console.log(`  로그인 — 아이디: ${user}   비밀번호: ${pass}\n`);
   console.log('  ※ 공개 URL이지만 Basic 인증·무차별대입 잠금·보안 헤더로 보호됩니다.');
   console.log(`  ※ ${idleMs ? `${idleMin}분 유휴 시 자동 종료` : '유휴 자동종료 비활성'} · 시도 로그: ${AUTH_LOG}`);
+  // TTL 활성 시 절대 최대 수명을 안내한다(유휴와 별개로 활동과 무관하게 강제 종료됨).
+  if (ttlMs) {
+    console.log(`  ※ 최대 ${ttlMin}분 후 자동 종료(유휴와 별개, 활동 무관)`);
+  }
   console.log('  ※ URL은 실행마다 바뀝니다. 해제: odpeek off');
+  // P5 캐비엇: QR이 출력될 때만 의미 있는 안내(tunnel 전용 — Basic 인증 자격증명은 QR 미포함).
+  if (showQrCaveat) {
+    console.log('  ※ QR은 주소만 담습니다 — 로그인 아이디/비밀번호는 위에 표시된 값을 폰에 직접 입력하세요.');
+  }
 }
 
 /**
@@ -360,6 +438,7 @@ async function cmdTunnel(opts) {
   const user = process.env.ODPEEK_USER || DEFAULT_AUTH_USER;
   const pass = process.env.ODPEEK_PASS || randomBytes(9).toString('base64url');
   const idleMs = toIdleMs(opts.idleMin);
+  const ttlMs = toTtlMs(opts.ttlMin);
 
   stopRunningTunnel();
   ensureDir();
@@ -368,7 +447,10 @@ async function cmdTunnel(opts) {
   let cf = null;
   try {
     // 1) 인증 프록시 기동 → 실제로 401 챌린지에 응답할 때까지 검증.
-    proxy = spawnAuthProxy(opts.authPort, targetPort, { user, pass }, idleMs);
+    //    [단일 t0] proxy의 TTL setTimeout 기준 시각(spawn 시점)을 startedAt에 그대로 쓰기 위해
+    //    spawn 직전에 한 번만 캡처한다 → uptime·TTL 잔여 계산이 실제 발화 시각과 정합한다.
+    const proxyStartedAt = Date.now();
+    proxy = spawnAuthProxy(opts.authPort, targetPort, { user, pass }, idleMs, ttlMs);
     await waitForProxyReady(opts.authPort, proxy);
 
     // 2) 프록시가 확인된 뒤에만 cloudflared 터널을 연다.
@@ -387,8 +469,15 @@ async function cmdTunnel(opts) {
       odPid,
       user,
       url,
+      startedAt: proxyStartedAt,
+      ttlMs,
+      // [idle false-telemetry] idleMin을 저장해 status/sessions가 idle 활성 여부를 정확히 보고하게 한다.
+      // (미저장 시 buildIdleView가 unknown(null)로 처리 — enabled:false 거짓 단정 방지.)
+      idleMin: opts.idleMin,
     });
-    printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin });
+    printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin, ttlMs, ttlMin: opts.ttlMin, showQrCaveat: !opts.noQr });
+    // 공개 URL만 QR로 인코딩한다(자격증명/userinfo 미포함 — url 변수는 trycloudflare https URL 그대로).
+    if (!opts.noQr) printQr(url, { invert: opts.qrInvert });
   } catch (error) {
     // 부분 기동 상태를 남기지 않는다: 띄운 자식과 상태 파일을 정리하고 재던진다.
     cleanupTunnelChildren([proxy, cf]);
@@ -397,19 +486,22 @@ async function cmdTunnel(opts) {
 }
 
 /** __authproxy 위치 인자를 구조화해 파싱한다(buildAuthProxyArgs와 대칭). */
-function parseAuthProxyArgs(positional) {
-  const [, listenPort, targetPort, idleMs, logFile] = positional;
+export function parseAuthProxyArgs(positional) {
+  const [, listenPort, targetPort, idleMs, logFile, ttlMs] = positional;
   return {
     listenPort: Number(listenPort),
     targetPort: Number(targetPort),
     idleMs: Number(idleMs) || 0,
     logFile,
+    // [P2] ttlMs는 Number()||0(음수 통과)을 쓰지 않고 비음수 정수만 받는다.
+    // 5-인자 하위호환: positional[5]===undefined → Number(undefined)=NaN → Number.isInteger(NaN)=false → 0.
+    ttlMs: (Number.isInteger(Number(ttlMs)) && Number(ttlMs) >= 0) ? Number(ttlMs) : 0,
   };
 }
 
 /** (내부용) 분리 프로세스로 호출되어 Basic 인증 프록시를 돌린다. */
 function cmdAuthProxy(opts) {
-  const { listenPort, targetPort, idleMs, logFile } = parseAuthProxyArgs(opts._);
+  const { listenPort, targetPort, idleMs, logFile, ttlMs } = parseAuthProxyArgs(opts._);
   // 내부 진입점도 자기완결적으로 검증한다(직접 호출/오용 시 NaN 포트 전파 차단).
   if (!isValidPort(listenPort) || !isValidPort(targetPort)) {
     console.error(`인증 프록시 포트가 올바르지 않습니다: listen=${listenPort}, target=${targetPort}`);
@@ -423,12 +515,115 @@ function cmdAuthProxy(opts) {
     console.error('자격증명(ODPEEK_PASS)이 비어 있어 인증 프록시를 시작하지 않습니다.');
     process.exit(1);
   }
-  runAuthProxy(listenPort, targetPort, user, pass, { idleMs, logFile });
+  runAuthProxy(listenPort, targetPort, user, pass, { idleMs, logFile, ttlMs });
+}
+
+/**
+ * 후보 경로 목록을 순서대로 시도해 실행 가능한 첫 번째 절대 경로(또는 PATH 이름)를 반환한다.
+ * resolveCloudflared와 동일한 정신으로 신뢰 가능한 절대 경로를 먼저 시도해 PATH 하이재킹을 완화한다.
+ * @param {string[]} candidates 시도할 경로 목록(절대 경로 우선, PATH 이름 최후)
+ * @returns {string} 실행 가능한 첫 번째 경로 또는 마지막 후보(폴백)
+ */
+function resolveBin(candidates) {
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ['--version'], { stdio: 'ignore' });
+      return candidate;
+    } catch {
+      // 다음 후보 시도
+    }
+  }
+  // 모든 절대 경로 실패 시 마지막 후보(PATH 이름)로 폴백.
+  return candidates[candidates.length - 1];
+}
+
+/**
+ * 살아있는 cloudflared 후보 PID 목록을 열거한다(고아 회수용).
+ * 1차로 `pgrep -f cloudflared`, 비정상 종료/빈 결과 시 폴백으로 `ps`(processMatches가 쓰는
+ * 동일 메커니즘)를 쓴다. 두 열거기가 모두 실패하면 null을 반환해 호출부가 report-only로
+ * 강등하게 한다(throw 금지·추측 kill 금지). pgrep -f의 macOS/Linux 매칭 차이는 후보 수집에만
+ * 영향을 주며, 최종 odpeek-소유 판정은 항상 processMatches(협소 시그니처)가 단독으로 내린다.
+ * @returns {number[]|null} 후보 PID 배열(빈 배열 포함), 두 열거기 모두 실패 시 null
+ */
+export function listCloudflaredCandidates() {
+  // 절대 경로를 먼저 시도해 PATH 하이재킹을 완화한다(resolveCloudflared와 동일 정신).
+  const pgrepBin = resolveBin(['/usr/bin/pgrep', 'pgrep']);
+  const psBin = resolveBin(['/bin/ps', '/usr/bin/ps', 'ps']);
+
+  // 1차: pgrep -f cloudflared (후보 PID 수집 전용 — 판정에 쓰지 않음).
+  try {
+    const out = execFileSync(pgrepBin, ['-f', 'cloudflared'], { encoding: 'utf8' });
+    const pids = out.split('\n').map((line) => Number(line.trim())).filter((pid) => Number.isInteger(pid) && pid > 0);
+    return pids;
+  } catch {
+    // pgrep 실패(매치 없음은 exit 1 → 여기로 옴)나 부재 시 폴백으로 넘어간다.
+  }
+  // 2차(폴백): ps로 전체 프로세스를 열거해 cloudflared 후보를 추린다.
+  try {
+    const out = execFileSync(psBin, ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
+    const pids = [];
+    for (const line of out.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed.includes('cloudflared')) continue;
+      const pid = Number(trimmed.split(/\s+/)[0]);
+      if (Number.isInteger(pid) && pid > 0) pids.push(pid);
+    }
+    return pids;
+  } catch {
+    // pgrep·ps 둘 다 실패 → 열거 불가. report-only 강등 신호로 null 반환.
+    return null;
+  }
+}
+
+/**
+ * state가 소실(readTunnel()===null)됐는데 cloudflared만 살아남은 고아를 회수한다(§2.5).
+ * 기존 stopRunningTunnel(readTunnel-valid 경로)과 중복되지 않는 추가 경로다.
+ * 발견한 cloudflared 후보 중 odpeek 고유 협소 시그니처(`--url http://localhost:${authPort}`)에
+ * 일치하는 것만 auto-kill하고, 불일치 cloudflared는 report-only로 안내만 한다(무차별 kill 금지).
+ *
+ * 후보 열거기는 기본 인자로 주입한다(exitFn 패턴과 동일한 정신). 프로덕션 기본 경로는
+ * 기본값 listCloudflaredCandidates를 그대로 쓰므로 동작이 불변이다. 테스트는
+ * `{ listCandidates: () => null }`로 두 열거기 동시 실패를, `() => [pid]`로 후보 주입을 구동한다.
+ * @param {{ listCandidates?: () => (number[]|null) }} [options] 후보 열거기 주입 hook(테스트 전용)
+ */
+export function reconcileOrphanTunnel({ listCandidates = listCloudflaredCandidates } = {}) {
+  // 진짜 새 경로만 처리한다: state가 살아 있으면 stopRunningTunnel이 이미 정리했다.
+  if (readTunnel() !== null) return;
+
+  // authPort는 state가 없으므로 기본값(env 또는 8765)을 쓴다.
+  const authPort = Number(process.env.ODPEEK_AUTH_PORT) || 8765;
+  const signature = `--url http://localhost:${authPort}`;
+
+  const candidates = listCandidates();
+  if (candidates === null) {
+    // 두 열거기 동시 실패 → 크래시 없이 report-only no-kill + 수동 점검 힌트(throw·추측 kill 금지).
+    console.log("프로세스 목록을 열거하지 못했습니다. 'ps aux | grep cloudflared'로 잔존 터널을 직접 확인하세요.");
+    return;
+  }
+
+  for (const pid of candidates) {
+    if (!isAlive(pid)) continue;
+    // 최종 판정은 항상 processMatches(협소 시그니처)가 단독으로 내린다.
+    if (processMatches(pid, signature)) {
+      // odpeek가 띄운 고아임이 확정 → auto-kill(단일-호스트 신뢰모델 내 안전).
+      try {
+        process.kill(pid);
+        console.log(`잔존 odpeek 터널(cloudflared PID ${pid})을 정리했습니다.`);
+      } catch {
+        // 이미 종료됨
+      }
+    } else {
+      // 협소 시그니처 불일치(타인/다른 도구의 cloudflared) → report-only, kill 금지.
+      console.log(`odpeek 시그니처와 일치하지 않는 cloudflared(PID ${pid})를 발견했습니다. odpeek가 띄운 것이 아니므로 종료하지 않습니다.`);
+    }
+  }
 }
 
 /** 모든 노출(serve + 터널)을 해제한다. */
 function cmdOff(opts) {
   stopRunningTunnel();
+  // state 소실 + 고아 cloudflared 생존 경로를 추가로 회수한다(협소 시그니처 auto-kill, §2.5).
+  reconcileOrphanTunnel();
   const bin = resolveTailscaleBin();
   if (bin) {
     try {
@@ -447,7 +642,10 @@ function cmdIp(opts) {
   if (!ip) {
     throw new Error('tailnet IP를 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
   }
-  console.log(`http://${ip}:${opts.port}`);
+  const ipUrl = `http://${ip}:${opts.port}`;
+  console.log(ipUrl);
+  // tailnet 주소는 자격증명 없음 → P5 캐비엇 불필요. QR은 IP URL만 인코딩한다.
+  if (!opts.noQr) printQr(ipUrl, { invert: opts.qrInvert });
 }
 
 /** MagicDNS 이름 기반 접속 주소를 출력한다. */
@@ -456,11 +654,81 @@ function cmdUrl(opts) {
   if (!dns) {
     throw new Error('MagicDNS 이름을 확인할 수 없습니다. tailscale 연결 상태를 확인하세요.');
   }
-  console.log(`http://${dns}:${opts.port}`);
+  const dnsUrl = `http://${dns}:${opts.port}`;
+  console.log(dnsUrl);
+  // tailnet 주소는 자격증명 없음 → P5 캐비엇 불필요. QR은 DNS URL만 인코딩한다.
+  if (!opts.noQr) printQr(dnsUrl, { invert: opts.qrInvert });
+}
+
+/**
+ * Open Design 포트를 감지해 JSON envelope용 형태로 정규화한다(읽기 전용).
+ * 감지 성공이면 {pid, port}, 실패(미실행/다중 매칭/도구 부재)면 {detected:false, reason}.
+ * detectWebPort가 던지는 에러를 삼켜 read-only 명령이 중단되지 않게 한다.
+ * @param {string} pattern OD 프로세스 매칭 패턴
+ * @returns {{pid:number, port:number}|{detected:false, reason:string}}
+ */
+function detectOpenDesignForJson(pattern) {
+  try {
+    return detectWebPort(pattern);
+  } catch (error) {
+    return { detected: false, reason: error.message };
+  }
+}
+
+/**
+ * tailscale 상태를 JSON envelope용 안전 요약으로 파생한다(전체 IP·자격증명 미포함).
+ * BackendState와 MagicDNS 이름만 노출하고, tailnet IP는 maskIp로만(원본 미노출) 싣는다.
+ * tailscale 미설치/조회 실패 시 {installed:false}로 정직하게 표기한다.
+ * @returns {object} tailscale 안전 요약 블록
+ */
+function buildTailscaleSummary() {
+  const bin = resolveTailscaleBin();
+  if (!bin) return { installed: false };
+  let status = null;
+  try {
+    status = statusJson(bin);
+  } catch {
+    return { installed: true, backendState: 'unknown' };
+  }
+  const ip4 = selfIp4(status);
+  return {
+    installed: true,
+    backendState: status?.BackendState ?? 'unknown',
+    magicDnsName: selfDnsName(status),
+    // tailnet IP는 전체 노출 금지 — maskIp로만 싣는다(없으면 null).
+    ip4Masked: ip4 ? maskIp(ip4) : null,
+  };
+}
+
+/**
+ * status/doctor `--json` 빌더에 넘길 공통 입력을 구성한다(읽기 전용).
+ * tunnelState=readTunnel(), openDesign=감지 시도, tailscale=안전 요약, now=현재 시각.
+ *
+ * [running false-telemetry] tunnel.running은 cf 프로세스 생존 여부를 반영해야 하므로
+ * 여기서 isAlive로 계산해 주입한다(텍스트 cmdStatus의 `tunnel?.cfPid && isAlive(...)` 판정과 일관).
+ * output.mjs는 순수 함수라 process 호출을 할 수 없으므로 이 부작용은 호출자가 책임진다.
+ * @param {object} opts CLI 옵션(pattern 사용)
+ * @returns {{tunnelState:object|null, openDesign:object, tailscale:object, now:number, running:boolean}}
+ */
+function gatherJsonInputs(opts) {
+  const tunnelState = readTunnel();
+  const running = Boolean(tunnelState?.cfPid && isAlive(tunnelState.cfPid));
+  return {
+    tunnelState,
+    openDesign: detectOpenDesignForJson(opts.pattern),
+    tailscale: buildTailscaleSummary(),
+    now: Date.now(),
+    running,
+  };
 }
 
 /** 현재 노출 상태(serve + 터널)와 감지된 OD 포트를 출력한다. */
 function cmdStatus(opts) {
+  if (opts.json) {
+    // 순수 JSON 한 줄만 stdout으로 — 사람용 텍스트 경로는 실행하지 않는다(파이프 안전).
+    console.log(JSON.stringify(buildStatusJson(gatherJsonInputs(opts))));
+    return;
+  }
   const bin = resolveTailscaleBin();
   console.log('[tailscale serve]');
   console.log(bin ? serveStatusText(bin) : 'tailscale 미설치');
@@ -482,6 +750,11 @@ function cmdStatus(opts) {
 
 /** tailscale / OD / MagicDNS 환경을 점검해 체크리스트를 출력한다. */
 function cmdDoctor(opts) {
+  if (opts.json) {
+    // 순수 JSON 한 줄만 stdout으로 — 사람용 체크리스트 경로는 실행하지 않는다.
+    console.log(JSON.stringify(buildDoctorJson(gatherJsonInputs(opts))));
+    return;
+  }
   const bin = resolveTailscaleBin();
   let status = null;
   if (bin) {
@@ -510,6 +783,85 @@ function cmdDoctor(opts) {
   }
 }
 
+/**
+ * auth.log를 읽어 텍스트를 반환한다(읽기 전용). 파일이 없거나 읽기 실패면 빈 문자열.
+ * sessions는 read-only 진단이므로 로그 부재를 에러로 올리지 않고 graceful하게 처리한다.
+ * @returns {string} auth.log 전체 텍스트(없으면 '')
+ */
+function readAuthLogText() {
+  try {
+    return readFileSync(AUTH_LOG, 'utf8');
+  } catch {
+    return ''; // 미존재/권한 등 — 빈 로그로 간주(graceful)
+  }
+}
+
+/**
+ * 세션/연결 관측 정보를 출력한다(읽기 전용 — 상태 변경·파일 쓰기 없음).
+ *
+ * 표시(텍스트): 활성 터널 URL·uptime·TTL 잔여·최근 인증 실패 수·잠금 여부·고유 출발 IP(마스킹).
+ * [F1/Defect 3] idle 잔여는 도출 불가하므로 절대 표시하지 않는다(uptime·TTL 잔여만).
+ * 가장 최근 TUNNEL_KILL matched=false 기록이 있으면 잠재 고아 cloudflared 경고를 파생 표기한다.
+ * `--json`이면 buildSessionsJson으로 순수 JSON 한 줄만 출력한다(사람용 텍스트와 혼재 금지).
+ */
+function cmdSessions(opts) {
+  // [단일 t0] buildSessionsView와 buildSessionsJson에 동일한 기준 시각을 넘겨
+  // uptime·TTL 잔여 계산이 두 경로에서 정합하도록 한 번만 캡처한다.
+  const now = Date.now();
+  const tunnelState = readTunnel();
+  const authLogText = readAuthLogText();
+  const view = buildSessionsView({ tunnelState, authLogText, now });
+
+  if (opts.json) {
+    // 순수 JSON 한 줄만 stdout으로 — IP는 buildSessionsJson 내부 maskIp로만 노출된다.
+    // [running false-telemetry] cf 생존 여부를 isAlive로 계산해 주입(텍스트 경로 판정과 일관).
+    const running = Boolean(tunnelState?.cfPid && isAlive(tunnelState.cfPid));
+    const envelope = buildSessionsJson({
+      tunnelState,
+      sessions: view.sessions,
+      openDesign: detectOpenDesignForJson(opts.pattern),
+      now,
+      running,
+    });
+    console.log(JSON.stringify(envelope));
+    return;
+  }
+
+  printSessionsText(view);
+}
+
+/**
+ * buildSessionsView 결과를 사람용 텍스트로 출력한다(cmdSessions의 텍스트 경로).
+ * raw IP는 절대 찍지 않고 maskIp를 거친 형태만 노출한다(§원칙 3).
+ * @param {object} view buildSessionsView 반환값
+ */
+function printSessionsText(view) {
+  const { tunnelState, timing, sessions, potentialOrphan, lastKillAttempt } = view;
+
+  console.log('[Cloudflare 터널]');
+  if (tunnelState?.cfPid && isAlive(tunnelState.cfPid)) {
+    console.log(`  실행 중 — ${tunnelState.url || '(URL 미확인)'}`);
+    // uptime·TTL 잔여만 표기한다(idle 잔여는 F1 하 도출 불가 → 미표시).
+    if (timing.uptimeSec !== null) console.log(`  uptime: ${timing.uptimeSec}초`);
+    if (timing.ttl) console.log(`  TTL 잔여: ${timing.ttl.remainingSec}초 (최대 ${timing.ttl.ttlMin}분)`);
+  } else {
+    console.log('  실행 중이 아님');
+  }
+
+  console.log('\n[인증 시도 요약]');
+  console.log(`  최근 인증 실패: ${sessions.recentAuthFailures}건`);
+  console.log(`  잠금 발동: ${sessions.lockouts}건${view.locked ? ' (현재 잠금 상태 차단 기록 있음)' : ''}`);
+  // 고유 출발 IP는 마스킹된 형태로만 노출한다(raw 미노출).
+  const maskedIps = [...sessions.uniqueSourceIps].map((ip) => maskIp(ip));
+  console.log(`  고유 출발 IP: ${maskedIps.length}개${maskedIps.length ? ` (${maskedIps.join(', ')})` : ''}`);
+  if (sessions.lastFailureAt) console.log(`  마지막 실패 시각: ${sessions.lastFailureAt}`);
+
+  // 증거 기반 잠재-고아 신호(가장 최근 kill 시도가 시그니처 불일치/ps 실패로 건너뛰어진 경우).
+  if (potentialOrphan) {
+    console.log(`\n  ⚠ 잠재 고아 cloudflared 가능(cfPid ${lastKillAttempt.cfPid}의 kill을 건너뜀) — odpeek off 권장`);
+  }
+}
+
 // 명령 이름 → 핸들러 매핑.
 const COMMANDS = {
   up: cmdUp,
@@ -519,6 +871,7 @@ const COMMANDS = {
   url: cmdUrl,
   status: cmdStatus,
   doctor: cmdDoctor,
+  sessions: cmdSessions,
   __authproxy: cmdAuthProxy,
 };
 

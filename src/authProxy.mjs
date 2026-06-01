@@ -117,10 +117,12 @@ function clientIp(req) {
  * @param {number} targetPort 전달 대상(OD) 포트
  * @param {string} user 기대 사용자명
  * @param {string} pass 기대 비밀번호
- * @param {{idleMs?:number, logFile?:string}} options 유휴 종료/로그 설정
+ * @param {{idleMs?:number, logFile?:string, ttlMs?:number, exitFn?:(code:number)=>void}} options 유휴 종료/TTL/로그 설정
+ *   - ttlMs: TTL hard-cap 절대 데드라인(ms). 활동과 무관하게 이 시각이 지나면 강제 종료한다. 0이면 비활성.
+ *   - exitFn: (테스트 전용) 종료 함수 주입 hook. 기본은 process.exit. 재진입 가드를 스텁으로 구동 검증하기 위함이다.
  */
 export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
-  const { idleMs = 0, logFile } = options;
+  const { idleMs = 0, logFile, ttlMs = 0 } = options;
   // 방어적 검증: 잘못된 포트나 빈 자격으로는 절대 기동하지 않는다(인증 우회/오노출 차단).
   const portOk = (value) => Number.isInteger(value) && value >= 1 && value <= 65535;
   if (!portOk(listenPort) || !portOk(targetPort)) {
@@ -131,6 +133,18 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
     console.error('auth-proxy: 자격증명이 비어 있어 시작을 거부합니다.');
     process.exit(1);
   }
+  // [P2] ttlMs 자기완결 검증: 음수/비정수는 0(비활성)으로 강등한다(idle과 대칭).
+  // 음수가 setTimeout에 도달하면 다음 틱에 발화해 터널이 뜨자마자 죽으므로 진입점에서 막는다.
+  // [setTimeout 오버플로] 2^31-1(2147483647ms)을 넘는 값은 Node setTimeout이 오버플로해 즉시 발화하므로
+  // 0(비활성)으로 강등한다(CLI assertValidOpts 상한 검증과 이중 방어 — 큰 값이 즉시발화로 이어지지 않게).
+  const TIMEOUT_MAX_MS = 2147483647;
+  const safeTtlMs = (Number.isInteger(ttlMs) && ttlMs >= 0 && ttlMs <= TIMEOUT_MAX_MS) ? ttlMs : 0;
+  // 종료 함수 주입점(테스트가 no-op 스텁으로 교체해 재진입 가드를 구동할 수 있게 한다).
+  // 프로덕션 기본은 process.exit이며 동작은 불변이다.
+  const exitFn = typeof options.exitFn === 'function' ? options.exitFn : process.exit;
+  // [Defect 1] 재진입 가드 플래그. 현재 코드는 동기 exit(0)이 이미 두 번째 콜백 진입을 막지만,
+  // 향후 가드~exit 사이에 await가 들어가는 async 리팩터에 대한 심층 방어로 유지한다.
+  let shuttingDown = false;
 
   // IP별 실패 추적: ip -> { fails, lockUntil, lastSeen }
   const attempts = new Map();
@@ -440,6 +454,36 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
     process.exit(1);
   });
 
+  /**
+   * 프록시와 cloudflared 터널을 정리하고 프로세스를 종료한다(idle/TTL 공통 종료 경로).
+   * 가드~exit 사이에 await를 절대 넣지 않는다(동기 보장 — 멱등이 동기성으로 성립한다).
+   * @param {string} reasonLabel 종료 사유 로그 라벨(고정 문자열, 살균 불필요)
+   */
+  const scheduleShutdown = (reasonLabel) => {
+    // [Defect 1] 재진입 가드(최상단, 심층 방어). 동기 exit가 이미 double 호출을 막지만,
+    // 향후 async 리팩터에 대비해 둔다.
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(reasonLabel);
+    const tunnel = readTunnel();
+    // [P4] PID 재사용으로 무관한 프로세스를 죽이지 않도록 시그니처를 확인한다(가드 verbatim 보존).
+    const matched = !!(tunnel?.cfPid && isAlive(tunnel.cfPid) && processMatches(tunnel.cfPid, 'cloudflared'));
+    if (matched) {
+      try {
+        process.kill(tunnel.cfPid);
+      } catch {
+        // 이미 종료됨
+      }
+    }
+    // [변경 2] durable kill-attempt breadcrumb(kill 직후 동기 emit).
+    // 정수 PID + boolean만 담는 고정 구조 라인이라 IP/자격증명을 포함하지 않는다(sanitizeForLog 불필요).
+    // matched=false 라인은 시그니처 불일치/ps 실패로 kill을 건너뛴 "잠재 고아" 신호다.
+    log('TUNNEL_KILL cfPid=' + (tunnel?.cfPid ?? 0) + ' matched=' + matched);
+    // matched=false여도(고아 가능성은 잔여 위험) 정리·종료는 항상 진행한다.
+    clearTunnel();
+    exitFn(0);
+  };
+
   // 유휴 자동 종료: idleMs 동안 인증된 활동이 없으면 터널까지 정리하고 종료.
   if (idleMs > 0) {
     setInterval(() => {
@@ -450,19 +494,20 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
         return;
       }
       if (Date.now() - lastActivity < idleMs) return;
-      log(`IDLE_SHUTDOWN after ${idleMs / 60000}min idle`);
-      const tunnel = readTunnel();
-      // PID 재사용으로 무관한 프로세스를 죽이지 않도록 시그니처를 확인한다.
-      if (tunnel?.cfPid && isAlive(tunnel.cfPid) && processMatches(tunnel.cfPid, 'cloudflared')) {
-        try {
-          process.kill(tunnel.cfPid);
-        } catch {
-          // 이미 종료됨
-        }
-      }
-      clearTunnel();
-      process.exit(0);
+      scheduleShutdown(`IDLE_SHUTDOWN after ${idleMs / 60000}min idle`);
     }, 60 * 1000).unref();
+  }
+
+  // TTL hard-cap: 활동과 무관하게 safeTtlMs가 지나면 강제 종료한다(절대 데드라인).
+  // idle의 activeConnections 보류를 상속하지 않도록 scheduleShutdown을 직접 호출한다.
+  if (safeTtlMs > 0) {
+    setTimeout(() => scheduleShutdown(`TTL_SHUTDOWN after ${safeTtlMs / 60000}min cap`), safeTtlMs).unref();
+  }
+
+  // (테스트 전용) 내부 핸들을 노출하는 hook. 재진입 가드를 in-process로 구동·검증하기 위함이다.
+  // 프로덕션은 이 옵션을 전달하지 않으므로 동작에 영향이 없다.
+  if (typeof options.__exposeInternals === 'function') {
+    options.__exposeInternals({ scheduleShutdown, server });
   }
 
   server.listen(listenPort, '127.0.0.1', () => {
