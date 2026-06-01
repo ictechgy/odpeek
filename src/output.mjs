@@ -8,6 +8,13 @@
 // 순수 함수 모듈: 파일 IO·부작용·런타임 npm 의존성이 일절 없다(stdlib만, 테스트 결정성).
 // 시각(generatedAt 등)은 호출자가 주입한 now(epoch ms)에서 파생해 결정론적으로 만든다.
 
+import net from 'node:net';
+
+// `new Date(now).toISOString()`이 throw 없이 직렬화 가능한 epoch ms의 유효 범위.
+// ECMAScript Date는 ±8.64e15ms(±100,000,000일)만 표현 가능하다. 이 범위를 벗어나거나
+// 비유한(NaN/Infinity)인 now는 안전 폴백(0 = 1970-01-01T00:00:00.000Z)으로 정규화한다.
+const MAX_TIME_MS = 8.64e15;
+
 /** envelope 스키마 버전. 소비자가 키 구조를 안전하게 파싱하도록 고정한다. */
 const SCHEMA_VERSION = 1;
 
@@ -29,40 +36,63 @@ function isPositiveInt(value) {
 }
 
 /**
- * 전체 IP를 마스킹해 raw 주소가 로그·JSON·출력에 새지 않게 한다(§원칙 3).
- * - IPv4: 앞 2옥텟만 남기고 뒤 2옥텟을 'x.x'로 가린다(예: '100.64.12.34' → '100.64.x.x').
- *   옥텟이 4개 미만이어도(부분/비정상 입력) 가진 앞부분 최대 2개만 노출하고 나머지는 가린다.
- * - IPv6: 앞 2개 hextet만 남기고 나머지를 'x'로 축약한다(예: '2001:db8::1' → '2001:db8:x').
- *   IPv6는 옥텟 단위가 아니므로 합리적 수준의 축약만 보장한다(완전 표준화는 목표 아님).
+ * 입력이 유효한 IP일 때만 마스킹하고, 비IP/호스트네임 등은 raw 일부도 노출하지 않는다(§원칙 3).
+ *
+ * 먼저 `net.isIP()`로 IP 종류를 판정한다(문자열 split 휴리스틱보다 안전 — 비IP/IPv4-mapped를
+ * 부분 노출하는 결함을 막는다).
+ * - IPv4(isIP===4): 앞 2옥텟만 남기고 뒤 2옥텟을 'x.x'로 가린다(예: '100.64.12.34' → '100.64.x.x').
+ * - IPv6(isIP===6):
+ *   - IPv4-mapped(`::ffff:a.b.c.d`)는 내부 IPv4(a.b.c.d)로 정규화한 뒤 IPv4 규칙으로 마스킹한다
+ *     (mapped 주소의 내부 IPv4가 부분 노출되는 결함 방지).
+ *   - 그 외 IPv6는 앞 1~2 hextet만 남기고 끝 hextet은 절대 노출하지 않는다
+ *     (예: '2001:db8::1' → '2001:db8:x', 'fe80::1' → 'fe80:x', '::1' → 'x').
+ * - isIP()===0(비IP·호스트네임·부분/비정상 입력): raw 일부도 노출하지 않고 고정 placeholder 'x.x.x.x'.
  * @param {string} ip 마스킹할 IP 문자열
- * @returns {string} 마스킹된 IP. 입력이 비문자열/빈 값이면 'x.x.x.x'
+ * @returns {string} 마스킹된 IP. 비IP/비문자열/빈 값이면 'x.x.x.x'
  * @note raw IP는 절대 반환하지 않는다. 호출자는 항상 이 함수를 거쳐야 한다.
  */
 export function maskIp(ip) {
   if (typeof ip !== 'string' || ip.length === 0) return 'x.x.x.x';
-  // IPv6는 콜론을 포함한다(IPv4-mapped 형태 '::ffff:1.2.3.4' 포함).
-  // 압축(::) 주소에서 끝의 낮은 hextet이 노출되지 않도록, 콜론으로 단순 분리하지 않고
-  // 주소 앞부분(첫 번째 '::'이나 주소 끝 이전)에서 프리픽스 hextet만 추출한다.
-  // 예: 'fe80::1' → split(':') = ['fe80','','1'] → 앞에서 비어있지 않은 hextet 최대 2개 = ['fe80']
-  //     → 'fe80:x' (끝 '1' 노출 없음)
-  //     '2001:db8::1' → ['2001','db8','','1'] → ['2001','db8'] → '2001:db8:x'
-  //     '2001:db8:abcd:0012::1' → ['2001','db8','abcd','0012','','1'] → ['2001','db8'] → '2001:db8:x'
-  if (ip.includes(':')) {
-    // split(':')에서 빈 문자열이 아닌 앞 1~2개 hextet만 프리픽스로 사용한다.
-    // 빈 항목('::' 의 '' 부분)은 주소 압축 경계이므로 그 이전까지만 안전하게 쓴다.
-    const parts = ip.split(':');
-    const prefix = [];
-    for (const part of parts) {
-      if (part.length === 0) break; // '::' 경계 도달 → 이후는 낮은 hextet이므로 중단
-      prefix.push(part);
-      if (prefix.length === 2) break; // 최대 2 hextet
-    }
-    return prefix.length > 0 ? `${prefix.join(':')}:x` : 'x';
+  const kind = net.isIP(ip);
+  if (kind === 4) return maskIpv4(ip);
+  if (kind === 6) return maskIpv6(ip);
+  // isIP()===0: 비IP/호스트네임/부분 입력 — raw를 절대 노출하지 않고 고정 placeholder.
+  return 'x.x.x.x';
+}
+
+/**
+ * 검증된 IPv4를 앞 2옥텟만 남기고 마스킹한다(maskIp 내부 헬퍼, 입력은 isIP()===4 보장).
+ * @param {string} ip 유효한 IPv4 문자열
+ * @returns {string} 'a.b.x.x' 형태
+ */
+function maskIpv4(ip) {
+  const head = ip.split('.').slice(0, 2).join('.');
+  return `${head}.x.x`;
+}
+
+/**
+ * 검증된 IPv6를 마스킹한다(maskIp 내부 헬퍼, 입력은 isIP()===6 보장).
+ * IPv4-mapped(`::ffff:a.b.c.d`)는 내부 IPv4로 정규화 후 IPv4 규칙으로 마스킹하고,
+ * 그 외에는 앞 1~2 hextet만 남기고 끝 hextet은 노출하지 않는다.
+ * @param {string} ip 유효한 IPv6 문자열
+ * @returns {string} 'a.b.x.x'(mapped) 또는 'h1:h2:x' / 'h1:x' / 'x'
+ */
+function maskIpv6(ip) {
+  // IPv4-mapped(::ffff:a.b.c.d 또는 ::a.b.c.d 등) — 마지막 콜론 뒤가 점 표기면 내부 IPv4.
+  const lastColon = ip.lastIndexOf(':');
+  const tail = ip.slice(lastColon + 1);
+  if (tail.includes('.') && net.isIP(tail) === 4) {
+    return maskIpv4(tail);
   }
-  // IPv4: 점으로 분리해 앞 2옥텟만 남긴다.
-  const octets = ip.split('.');
-  const head = octets.slice(0, 2).join('.');
-  return head ? `${head}.x.x` : 'x.x.x.x';
+  // 일반 IPv6: split(':')에서 빈 문자열이 아닌 앞 1~2 hextet만 프리픽스로 쓴다.
+  // 빈 항목('::'의 '' 부분)은 압축 경계이므로 그 이전까지만 안전하게 노출한다.
+  const prefix = [];
+  for (const part of ip.split(':')) {
+    if (part.length === 0) break; // '::' 경계 도달 → 이후는 낮은 hextet이므로 중단
+    prefix.push(part);
+    if (prefix.length === 2) break; // 최대 2 hextet
+  }
+  return prefix.length > 0 ? `${prefix.join(':')}:x` : 'x';
 }
 
 /**
@@ -95,7 +125,9 @@ export function tunnelTiming(state, now) {
   }
 
   const elapsedMs = now - startedAt;
-  const uptimeSec = finiteOrNull(Math.floor(elapsedMs / 1000));
+  // [generatedAt/uptime 가드] 시계 롤백(now < startedAt)으로 음수 경과가 나오면 거짓 음수 대신
+  // 0으로 클램프한다(다른 시간 필드의 비음수 정책과 일관). 비유한은 finiteOrNull로 null 병합.
+  const uptimeSec = finiteOrNull(Math.max(0, Math.floor(elapsedMs / 1000)));
 
   // idle: enabled/idleMin은 tunnel.json/env에서 알 수 있으나 remainingSec은 항상 null.
   const idle = buildIdleView(state);
@@ -108,17 +140,27 @@ export function tunnelTiming(state, now) {
 
 /**
  * idle 뷰를 만든다. [Defect 3] remainingSec은 F1 하에서 항상 null(거짓 보고 금지).
- * enabled/idleMin은 상태가 알려주면 채우고, 아니면 보수적으로 enabled:false로 둔다.
+ *
+ * [Defect/idle false-telemetry] idle 정보(idleMs 또는 idleMin)가 상태에 **전혀 없으면**
+ * 활성 여부를 알 수 없으므로 `enabled:false`로 거짓 단정하지 않고 `null`(unknown)을 돌려준다
+ * (구버전 tunnel.json은 idleMin을 저장하지 않으므로 이 경로로 들어온다).
+ * 정보가 있으면(idleMs>0 또는 idleMin>=0) enabled/idleMin을 정확히 도출한다.
  * @param {object} state 터널 상태({idleMs?, idleMin?})
- * @returns {{enabled:boolean, idleMin:number|null, remainingSec:null}}
+ * @returns {{enabled:boolean, idleMin:number|null, remainingSec:null}|null}
  */
 function buildIdleView(state) {
   // idleMs(밀리초) 또는 idleMin(분) 중 알 수 있는 쪽에서 활성 여부를 도출한다.
   const idleMs = Number(state?.idleMs);
-  const hasIdleMs = Number.isFinite(idleMs) && idleMs > 0;
+  const hasIdleMs = Number.isFinite(idleMs) && idleMs >= 0 && state?.idleMs !== undefined;
+  const idleMinRaw = Number(state?.idleMin);
+  const hasIdleMin = Number.isFinite(idleMinRaw) && idleMinRaw >= 0 && state?.idleMin !== undefined;
+  // idle 정보가 전혀 없으면(구버전 tunnel.json) 거짓 단정 금지 → null(unknown).
+  if (!hasIdleMs && !hasIdleMin) return null;
+
   const idleMinFromMs = hasIdleMs ? Math.round(idleMs / 60000) : null;
-  const idleMin = finiteOrNull(Number(state?.idleMin)) ?? idleMinFromMs;
-  const enabled = hasIdleMs || (Number.isFinite(idleMin) && idleMin > 0);
+  const idleMin = hasIdleMin ? idleMinRaw : idleMinFromMs;
+  // 활성 여부는 양수 idle 값일 때만 true(0=비활성으로 명시 저장된 경우 enabled:false).
+  const enabled = (hasIdleMs && idleMs > 0) || (Number.isFinite(idleMin) && idleMin > 0);
   return { enabled, idleMin: enabled ? finiteOrNull(idleMin) : null, remainingSec: null };
 }
 
@@ -141,15 +183,20 @@ function buildTtlView(state, elapsedMs) {
  * 터널 상태에서 envelope의 `tunnel` 블록을 만든다(없으면 null).
  * url은 그대로 싣되, trycloudflare URL에는 userinfo가 없음을 readTunnel 검증이 보장한다.
  * 비밀번호는 상태에 저장되지 않으므로(현재 user만 저장) 노출 위험 없음.
+ *
+ * [running false-telemetry] `running`은 cf 프로세스 생존 여부를 반영해야 한다(무조건 true 금지).
+ * 순수성 유지를 위해 liveness를 직접 판정하지 않고(부작용 없음) 호출자가 인자로 주입한다
+ * (cli.mjs gatherJsonInputs에서 isAlive로 계산 — 텍스트 cmdStatus의 판정과 일관).
  * @param {object|null} tunnelState readTunnel() 결과(또는 null)
  * @param {number} now 기준 시각(epoch ms)
+ * @param {boolean} running cf 프로세스 생존 여부(호출자가 주입, 부작용 없는 순수 입력)
  * @returns {object|null} tunnel 블록 또는 null
  */
-function buildTunnelBlock(tunnelState, now) {
+function buildTunnelBlock(tunnelState, now, running) {
   if (!tunnelState || typeof tunnelState !== 'object') return null;
   const { uptimeSec, idle, ttl } = tunnelTiming(tunnelState, now);
   return {
-    running: true,
+    running: Boolean(running),
     url: typeof tunnelState.url === 'string' ? tunnelState.url : null,
     uptimeSec,
     idle,
@@ -175,44 +222,60 @@ function buildOpenDesignBlock(openDesign) {
 }
 
 /**
+ * now(epoch ms)를 ISO8601로 안전하게 직렬화한다.
+ * [generatedAt 미가드] now가 NaN/Infinity이거나 Date 표현 범위(±8.64e15ms)를 벗어나면
+ * `new Date(now).toISOString()`이 RangeError를 던진다. 이를 막기 위해 비유한·범위초과 now는
+ * 안전 폴백(epoch 0 = 1970-01-01T00:00:00.000Z)으로 정규화한 뒤 직렬화한다.
+ * @param {number} now 기준 시각(epoch ms)
+ * @returns {string} ISO8601 문자열(throw 없음)
+ */
+function toIsoSafe(now) {
+  const safe = Number.isFinite(now) && Math.abs(now) <= MAX_TIME_MS ? now : 0;
+  return new Date(safe).toISOString();
+}
+
+/**
  * 공통 envelope 베이스를 만든다(schemaVersion·command·generatedAt·tunnel·openDesign).
- * generatedAt은 주입된 now(epoch ms)에서 ISO8601로 파생해 결정론을 보장한다.
+ * generatedAt은 주입된 now(epoch ms)에서 ISO8601로 파생해 결정론을 보장한다(범위초과/NaN 안전 폴백).
  * @param {string} command 'status' | 'doctor' | 'sessions'
- * @param {object} params {tunnelState, openDesign, now}
+ * @param {object} params {tunnelState, openDesign, now, running}
+ *   - running: cf 프로세스 생존 여부(호출자가 isAlive로 계산해 주입; tunnel.running에 반영)
  * @returns {object} envelope 베이스
  */
-function buildEnvelopeBase(command, { tunnelState, openDesign, now }) {
+function buildEnvelopeBase(command, { tunnelState, openDesign, now, running }) {
   return {
     schemaVersion: SCHEMA_VERSION,
     command,
-    generatedAt: new Date(now).toISOString(),
-    tunnel: buildTunnelBlock(tunnelState, now),
+    generatedAt: toIsoSafe(now),
+    tunnel: buildTunnelBlock(tunnelState, now, running),
     openDesign: buildOpenDesignBlock(openDesign),
   };
 }
 
 /**
  * `status --json` envelope를 만든다(§H1). tailscale 블록을 포함한다.
- * @param {object} params {tunnelState, openDesign, tailscale, now}
+ * @param {object} params {tunnelState, openDesign, tailscale, now, running}
  *   - tunnelState: readTunnel() 결과(또는 null)
  *   - openDesign: detectWebPort 결과({pid,port}) 또는 {detected:false,reason}
  *   - tailscale: tailscale 상태 요약 객체(전체 IP·자격증명 미포함이어야 함)
  *   - now: 기준 시각(epoch ms)
+ *   - running: cf 프로세스 생존 여부(호출자가 isAlive로 계산해 주입; tunnel.running에 반영)
  * @returns {object} schemaVersion:1 envelope(command:'status')
  */
-export function buildStatusJson({ tunnelState, openDesign, tailscale, now }) {
-  const envelope = buildEnvelopeBase('status', { tunnelState, openDesign, now });
+export function buildStatusJson({ tunnelState, openDesign, tailscale, now, running }) {
+  const envelope = buildEnvelopeBase('status', { tunnelState, openDesign, now, running });
   envelope.tailscale = tailscale ?? null;
   return envelope;
 }
 
 /**
  * `doctor --json` envelope를 만든다(§H1). tailscale 블록을 포함한다.
- * @param {object} params {tunnelState, openDesign, tailscale, now}
+ * @param {object} params {tunnelState, openDesign, tailscale, now, running}
+ *   - running: cf 프로세스 생존 여부(호출자가 isAlive로 계산해 주입; tunnel.running에 반영)
  * @returns {object} schemaVersion:1 envelope(command:'doctor')
  */
-export function buildDoctorJson({ tunnelState, openDesign, tailscale, now }) {
-  const envelope = buildEnvelopeBase('doctor', { tunnelState, openDesign, now });
+export function buildDoctorJson({ tunnelState, openDesign, tailscale, now, running }) {
+  const envelope = buildEnvelopeBase('doctor', { tunnelState, openDesign, now, running });
   envelope.tailscale = tailscale ?? null;
   return envelope;
 }
@@ -221,14 +284,15 @@ export function buildDoctorJson({ tunnelState, openDesign, tailscale, now }) {
  * `sessions --json` envelope를 만든다(§H1). sessions 블록을 포함한다.
  * sessions 집계의 IP는 maskIp로만 노출하며(ipsMasked), raw IP·비밀번호·userinfo는
  * 절대 포함하지 않는다(§원칙 3). idle 잔여는 tunnel.idle.remainingSec===null로 정직 표기.
- * @param {object} params {tunnelState, sessions, openDesign?, now}
+ * @param {object} params {tunnelState, sessions, openDesign?, now, running}
  *   - sessions: 로그 파서 집계 결과(원시 IP가 들어올 수 있으나 여기서 마스킹).
  *     {recentAuthFailures, lockouts, uniqueSourceIps:Set|number, ips:string[], lastFailureAt}
  *   - now: 기준 시각(epoch ms)
+ *   - running: cf 프로세스 생존 여부(호출자가 isAlive로 계산해 주입; tunnel.running에 반영)
  * @returns {object} schemaVersion:1 envelope(command:'sessions')
  */
-export function buildSessionsJson({ tunnelState, sessions, openDesign, now }) {
-  const envelope = buildEnvelopeBase('sessions', { tunnelState, openDesign, now });
+export function buildSessionsJson({ tunnelState, sessions, openDesign, now, running }) {
+  const envelope = buildEnvelopeBase('sessions', { tunnelState, openDesign, now, running });
   envelope.sessions = buildSessionsBlock(sessions);
   return envelope;
 }

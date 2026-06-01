@@ -31,7 +31,7 @@ import {
   copyFileSync,
 } from 'node:fs';
 
-import { toTtlMs, parseAuthProxyArgs } from '../src/cli.mjs';
+import { toTtlMs, parseAuthProxyArgs, assertValidOpts } from '../src/cli.mjs';
 import { runAuthProxy } from '../src/authProxy.mjs';
 
 const BIN = fileURLToPath(new URL('../bin/odpeek.mjs', import.meta.url));
@@ -182,6 +182,40 @@ function testParseAuthProxyArgsTtl() {
   console.log("PASS (U2): parseAuthProxyArgs ttlMs '-5'/'abc'→0, '120000'→120000, 5-인자→0");
 }
 
+/** assertValidOpts 호출용 기본 유효 opts(ttlMin만 케이스별로 덮어쓴다). */
+function baseOpts(overrides) {
+  return { port: 8080, authPort: 8765, idleMin: 30, ttlMin: 0, ...overrides };
+}
+
+/**
+ * (U5) [setTimeout 오버플로] 큰 --ttl이 assertValidOpts에서 throw하는지.
+ * 2147483647ms(약 35791.39분)을 ms로 넘기는 ttlMin은 setTimeout 오버플로 위험 → 거부.
+ */
+function testTtlOverflowRejected() {
+  // 2147483647ms / 60000 = 35791.39...분. 35792분 = 2147520000ms > 2147483647 → throw.
+  assert.throws(() => assertValidOpts(baseOpts({ ttlMin: 35792 })), /너무 큽니다/, '큰 ttl → throw');
+  assert.throws(() => assertValidOpts(baseOpts({ ttlMin: 100000 })), /너무 큽니다/, '아주 큰 ttl → throw');
+  // 경계 직전(35791분 = 2147460000ms ≤ 2147483647)은 통과해야 함.
+  assert.doesNotThrow(() => assertValidOpts(baseOpts({ ttlMin: 35791 })), '경계 내 ttl은 통과');
+  // ttlMin=0(비활성)도 통과.
+  assert.doesNotThrow(() => assertValidOpts(baseOpts({ ttlMin: 0 })), 'ttlMin=0(비활성) 통과');
+  console.log('PASS (U5): 큰 --ttl(>2^31-1 ms) → assertValidOpts throw, 경계 내는 통과');
+}
+
+/**
+ * (U6) [분수 --ttl 계약 불일치] 분수 ttlMin이 assertValidOpts에서 throw하는지.
+ * parseAuthProxyArgs가 정수 ms만 받아 분수가 0(비활성)으로 묻히므로 진입점에서 거부.
+ */
+function testFractionalTtlRejected() {
+  assert.throws(() => assertValidOpts(baseOpts({ ttlMin: 1.5 })), /정수\(분\)/, '분수 ttl → throw');
+  assert.throws(() => assertValidOpts(baseOpts({ ttlMin: 0.5 })), /정수\(분\)/, '0.5분 → throw');
+  assert.throws(() => assertValidOpts(baseOpts({ ttlMin: -1 })), /정수\(분\)/, '음수 ttl → throw');
+  assert.throws(() => assertValidOpts(baseOpts({ ttlMin: NaN })), /정수\(분\)/, 'NaN ttl → throw');
+  // 정수는 통과(분수만 거부 — idleMin 분수 동작은 별개로 건드리지 않음).
+  assert.doesNotThrow(() => assertValidOpts(baseOpts({ ttlMin: 5, idleMin: 1.5 })), '정수 ttl + 분수 idle은 통과(ttl만 정수 강제)');
+  console.log('PASS (U6): 분수/음수/NaN --ttl → assertValidOpts throw(정수 분 강제), idle 분수는 불변');
+}
+
 /**
  * (U3) runAuthProxy의 safeTtlMs 음수 강등.
  * 음수 ttlMs를 넘겨도 TTL setTimeout이 설정되지 않아 즉시 종료가 발생하지 않음을,
@@ -205,6 +239,31 @@ async function testSafeTtlMsNegative() {
   await new Promise((resolve) => server.close(resolve));
   await new Promise((resolve) => upstream.close(resolve));
   console.log('PASS (U3): 음수 ttlMs → safeTtlMs 0, 즉시 종료 setTimeout 미설정');
+}
+
+/**
+ * (U3-2) [setTimeout 오버플로 심층 방어] 2^31-1을 초과하는 ttlMs를 runAuthProxy에 넘겨도
+ * safeTtlMs가 0으로 강등되어 즉시 종료 setTimeout이 설정되지 않음을 검증한다(authProxy 클램프).
+ * (가드 없으면 setTimeout이 오버플로해 즉시 발화 → exitFn이 호출됐을 것이다.)
+ */
+async function testSafeTtlMsOverflow() {
+  const upstream = await startUpstream();
+  const targetPort = upstream.address().port;
+  const listenPort = await freePort();
+  let exitCalls = 0;
+  let server = null;
+  runAuthProxy(listenPort, targetPort, USER, PASS, {
+    idleMs: 0,
+    ttlMs: 2147483648, // 2^31 > 2147483647 → safeTtlMs 0 강등 → setTimeout 미설정(오버플로 즉시발화 방지)
+    exitFn: () => { exitCalls += 1; },
+    __exposeInternals: ({ server: s }) => { server = s; },
+  });
+  // 오버플로 setTimeout은 즉시(다음 틱) 발화한다. 충분히 기다려 미발화를 확인한다.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(exitCalls, 0, '2^31-1 초과 ttlMs는 0으로 강등돼 즉시 종료가 발생하지 않아야 함');
+  await new Promise((resolve) => server.close(resolve));
+  await new Promise((resolve) => upstream.close(resolve));
+  console.log('PASS (U3-2): 오버플로 ttlMs(>2^31-1) → safeTtlMs 0, 즉시발화 방지');
 }
 
 /**
@@ -423,7 +482,10 @@ async function main() {
     // Unit
     testToTtlMs();
     testParseAuthProxyArgsTtl();
+    testTtlOverflowRejected();
+    testFractionalTtlRejected();
     await testSafeTtlMsNegative();
+    await testSafeTtlMsOverflow();
     await testReentryGuard();
     // Integration
     await testTtlFire();

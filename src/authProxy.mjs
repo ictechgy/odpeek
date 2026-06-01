@@ -135,7 +135,10 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
   }
   // [P2] ttlMs 자기완결 검증: 음수/비정수는 0(비활성)으로 강등한다(idle과 대칭).
   // 음수가 setTimeout에 도달하면 다음 틱에 발화해 터널이 뜨자마자 죽으므로 진입점에서 막는다.
-  const safeTtlMs = (Number.isInteger(ttlMs) && ttlMs >= 0) ? ttlMs : 0;
+  // [setTimeout 오버플로] 2^31-1(2147483647ms)을 넘는 값은 Node setTimeout이 오버플로해 즉시 발화하므로
+  // 0(비활성)으로 강등한다(CLI assertValidOpts 상한 검증과 이중 방어 — 큰 값이 즉시발화로 이어지지 않게).
+  const TIMEOUT_MAX_MS = 2147483647;
+  const safeTtlMs = (Number.isInteger(ttlMs) && ttlMs >= 0 && ttlMs <= TIMEOUT_MAX_MS) ? ttlMs : 0;
   // 종료 함수 주입점(테스트가 no-op 스텁으로 교체해 재진입 가드를 구동할 수 있게 한다).
   // 프로덕션 기본은 process.exit이며 동작은 불변이다.
   const exitFn = typeof options.exitFn === 'function' ? options.exitFn : process.exit;

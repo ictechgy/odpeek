@@ -125,10 +125,25 @@ function testMaskIp() {
   assert.equal(loopback, 'x', '::1(루프백) → x (끝 1 미노출)');
   assert.doesNotMatch(loopback, /\b1\b/, '::1 마스킹 결과에 1 미노출');
 
+  // [maskIp 강화] IPv4-mapped IPv6(::ffff:a.b.c.d)는 내부 IPv4로 정규화 후 IPv4 마스킹.
+  // 끝 옥텟이 IPv6 hextet 노출 경로로 새지 않고 IPv4 규칙(앞 2옥텟만)으로 가려져야 한다.
+  const mapped = maskIp('::ffff:100.64.12.34');
+  assert.equal(mapped, '100.64.x.x', 'IPv4-mapped → 내부 IPv4 마스킹(100.64.x.x)');
+  assert.doesNotMatch(mapped, /12|34|ffff/, 'IPv4-mapped 결과에 뒤 옥텟·ffff 미노출');
+
+  // [maskIp 강화] 비IP(호스트네임/임의 문자열)는 net.isIP()===0 → raw 일부도 노출 말고 placeholder.
+  for (const notIp of ['evil.example.com', 'not-an-ip', '999.999.999.999', '100.64', '1.2.3', 'localhost']) {
+    assert.equal(maskIp(notIp), 'x.x.x.x', `비IP(${notIp}) → 고정 placeholder(raw 미노출)`);
+  }
+  // 비IP 입력(옥텟 5개)도 placeholder로만 반환하고 raw 조각을 노출하지 않는다.
+  const fiveOctet = maskIp('203.0.113.5.6');
+  assert.equal(fiveOctet, 'x.x.x.x', '옥텟 5개(비IP) → placeholder');
+  assert.doesNotMatch(fiveOctet, /113|203/, '비IP의 raw 옥텟 미노출');
+
   // 비정상 입력도 raw를 반환하지 않음.
   assert.equal(maskIp(''), 'x.x.x.x', '빈 문자열 → 기본 마스크');
   assert.equal(maskIp(undefined), 'x.x.x.x', '비문자열 → 기본 마스크');
-  console.log('PASS (d): maskIp가 전체 옥텟을 노출하지 않음(IPv4/IPv6 압축·완전전개/비정상)');
+  console.log('PASS (d): maskIp 강화 — 정상 IPv4/IPv6 유지·IPv4-mapped 내부IPv4 마스킹·비IP placeholder');
 }
 
 // (e) buildStatusJson / buildSessionsJson 출력에 비밀번호·raw IP·userinfo 부재.
@@ -196,6 +211,70 @@ function testNoSecretLeak() {
   console.log('PASS (e): status/doctor/sessions 출력에 비밀번호·raw IP·userinfo 부재');
 }
 
+// (f) [running false-telemetry] tunnel.running이 주입된 liveness를 반영(무조건 true 금지).
+function testRunningReflectsLiveness() {
+  const tunnelState = {
+    cfPid: 4321,
+    url: 'https://abc-def.trycloudflare.com',
+    startedAt: NOW - 60000,
+    ttlMs: 120000,
+    idleMin: 30,
+  };
+  // running 미주입(stale state) → Boolean(undefined)=false로 정직 보고.
+  const staleStatus = buildStatusJson({ tunnelState, openDesign: null, tailscale: null, now: NOW });
+  assert.equal(staleStatus.tunnel.running, false, 'running 미주입 → running:false(거짓 true 금지)');
+  // running=false 명시 주입(cf 프로세스 사망) → running:false.
+  const dead = buildStatusJson({ tunnelState, openDesign: null, tailscale: null, now: NOW, running: false });
+  assert.equal(dead.tunnel.running, false, 'running=false 주입 → running:false');
+  // running=true 주입(cf 생존) → running:true.
+  const alive = buildStatusJson({ tunnelState, openDesign: null, tailscale: null, now: NOW, running: true });
+  assert.equal(alive.tunnel.running, true, 'running=true 주입 → running:true');
+  // sessions/doctor 빌더도 동일하게 running을 반영.
+  const sess = buildSessionsJson({ tunnelState, sessions: {}, openDesign: null, now: NOW, running: true });
+  assert.equal(sess.tunnel.running, true, 'sessions: running=true 주입 반영');
+  const doc = buildDoctorJson({ tunnelState, openDesign: null, tailscale: null, now: NOW, running: false });
+  assert.equal(doc.tunnel.running, false, 'doctor: running=false 주입 반영');
+  console.log('PASS (f): tunnel.running이 주입 liveness 반영(stale→false, 생존→true)');
+}
+
+// (g) [idle false-telemetry] idle 정보 미저장(구버전) → idle:null(unknown), 저장 시 enabled 정확.
+function testIdleMissingIsNull() {
+  // idleMin/idleMs 둘 다 없는 구버전 tunnel.json → idle:null(enabled:false 거짓 단정 금지).
+  const legacy = { startedAt: NOW - 60000, ttlMs: 120000 };
+  const legacyTiming = tunnelTiming(legacy, NOW);
+  assert.equal(legacyTiming.idle, null, 'idle 정보 미저장 → idle:null(unknown)');
+
+  // idleMin=30 저장 → enabled:true, idleMin:30 정확 도출.
+  const enabled = tunnelTiming({ startedAt: NOW - 60000, idleMin: 30 }, NOW);
+  assert.ok(enabled.idle, 'idleMin 저장 시 idle 블록 존재');
+  assert.equal(enabled.idle.enabled, true, 'idleMin=30 → enabled:true');
+  assert.equal(enabled.idle.idleMin, 30, 'idleMin=30 정확 도출');
+  assert.equal(enabled.idle.remainingSec, null, 'remainingSec은 항상 null(F1)');
+
+  // idleMin=0 명시 저장(비활성) → enabled:false(거짓 활성 금지), idle 블록은 존재.
+  const disabled = tunnelTiming({ startedAt: NOW - 60000, idleMin: 0 }, NOW);
+  assert.ok(disabled.idle, 'idleMin=0 저장 시 idle 블록 존재(unknown 아님)');
+  assert.equal(disabled.idle.enabled, false, 'idleMin=0 → enabled:false');
+  console.log('PASS (g): idle 미저장→null(unknown), idleMin 저장 시 enabled/idleMin 정확');
+}
+
+// (h) [generatedAt 미가드] now=NaN/Infinity/범위초과여도 throw 없이 안전 폴백.
+function testGeneratedAtGuard() {
+  const tunnelState = { startedAt: 1000, idleMin: 30 };
+  for (const badNow of [NaN, Infinity, -Infinity, 9e15, -9e15]) {
+    // throw 없이 직렬화 가능해야 함(RangeError 방지).
+    const env = buildStatusJson({ tunnelState, openDesign: null, tailscale: null, now: badNow, running: true });
+    assert.equal(typeof env.generatedAt, 'string', `now=${String(badNow)} → generatedAt 문자열(throw 없음)`);
+    // 안전 폴백은 epoch 0(1970-01-01).
+    assert.equal(env.generatedAt, '1970-01-01T00:00:00.000Z', `now=${String(badNow)} → 안전 폴백 ISO`);
+    assertNoNonFinite(env, `status(now=${String(badNow)}) envelope`);
+  }
+  // 시계 롤백(now < startedAt) → uptimeSec 음수 대신 0 클램프.
+  const rollback = tunnelTiming({ startedAt: NOW, idleMin: 30 }, NOW - 5000);
+  assert.equal(rollback.uptimeSec, 0, '시계 롤백(now<startedAt) → uptimeSec 0 클램프(음수 금지)');
+  console.log('PASS (h): generatedAt now=NaN/Infinity/범위초과 안전 폴백 + uptime 음수 0 클램프');
+}
+
 function main() {
   testTimingNormal();
   testTtlClamp();
@@ -203,6 +282,9 @@ function main() {
   testIdleRemainingAlwaysNull();
   testMaskIp();
   testNoSecretLeak();
+  testRunningReflectsLiveness();
+  testIdleMissingIsNull();
+  testGeneratedAtGuard();
   console.log('\n모든 output 스캐폴딩 테스트 통과 ✅');
   process.exit(0);
 }

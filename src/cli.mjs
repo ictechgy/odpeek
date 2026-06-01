@@ -164,7 +164,7 @@ function parseArgs(argv) {
  * 잘못된 값(NaN/0/음수/범위 초과)이 listen·터널 인자로 무음 전파되어 인증 프록시
  * 우회나 진단 불가 실패로 이어지는 것을 막는다.
  */
-function assertValidOpts(opts) {
+export function assertValidOpts(opts) {
   for (const [name, value] of [['--port', opts.port], ['--auth-port', opts.authPort]]) {
     if (!Number.isInteger(value) || value < 1 || value > 65535) {
       throw new Error(`${name} 값이 올바르지 않습니다. 1~65535 정수여야 합니다: ${value}`);
@@ -176,8 +176,15 @@ function assertValidOpts(opts) {
   if (!Number.isFinite(opts.idleMin) || opts.idleMin < 0) {
     throw new Error(`--idle 값이 올바르지 않습니다. 0 이상이어야 합니다: ${opts.idleMin}`);
   }
-  if (!Number.isFinite(opts.ttlMin) || opts.ttlMin < 0) {
-    throw new Error(`--ttl 값이 올바르지 않습니다. 0 이상이어야 합니다: ${opts.ttlMin}`);
+  // [분수 --ttl 계약 불일치] ttlMin은 0 이상의 정수(분)만 허용한다. 분수는 parseAuthProxyArgs가
+  // 정수 ms만 받아 0(비활성)으로 묻히므로, 진입점에서 명확히 거부해 계약을 일치시킨다.
+  if (!Number.isInteger(opts.ttlMin) || opts.ttlMin < 0) {
+    throw new Error(`--ttl은 0 이상의 정수(분)여야 합니다: ${opts.ttlMin}`);
+  }
+  // [setTimeout 오버플로] safeTtlMs가 2^31-1(2147483647ms)을 넘으면 Node setTimeout이 오버플로해
+  // 즉시 발화 → 큰 --ttl이 터널을 즉시 종료시킨다. 상한을 진입점에서 막는다(authProxy 클램프와 이중 방어).
+  if (toTtlMs(opts.ttlMin) > 2147483647) {
+    throw new Error(`--ttl이 너무 큽니다. 최대 약 35791분(~24.8일)까지 가능합니다: ${opts.ttlMin}`);
   }
 }
 
@@ -464,6 +471,9 @@ async function cmdTunnel(opts) {
       url,
       startedAt: proxyStartedAt,
       ttlMs,
+      // [idle false-telemetry] idleMin을 저장해 status/sessions가 idle 활성 여부를 정확히 보고하게 한다.
+      // (미저장 시 buildIdleView가 unknown(null)로 처리 — enabled:false 거짓 단정 방지.)
+      idleMin: opts.idleMin,
     });
     printTunnelResult({ targetPort, url, user, pass, idleMs, idleMin: opts.idleMin, ttlMs, ttlMin: opts.ttlMin, showQrCaveat: !opts.noQr });
     // 공개 URL만 QR로 인코딩한다(자격증명/userinfo 미포함 — url 변수는 trycloudflare https URL 그대로).
@@ -693,15 +703,22 @@ function buildTailscaleSummary() {
 /**
  * status/doctor `--json` 빌더에 넘길 공통 입력을 구성한다(읽기 전용).
  * tunnelState=readTunnel(), openDesign=감지 시도, tailscale=안전 요약, now=현재 시각.
+ *
+ * [running false-telemetry] tunnel.running은 cf 프로세스 생존 여부를 반영해야 하므로
+ * 여기서 isAlive로 계산해 주입한다(텍스트 cmdStatus의 `tunnel?.cfPid && isAlive(...)` 판정과 일관).
+ * output.mjs는 순수 함수라 process 호출을 할 수 없으므로 이 부작용은 호출자가 책임진다.
  * @param {object} opts CLI 옵션(pattern 사용)
- * @returns {{tunnelState:object|null, openDesign:object, tailscale:object, now:number}}
+ * @returns {{tunnelState:object|null, openDesign:object, tailscale:object, now:number, running:boolean}}
  */
 function gatherJsonInputs(opts) {
+  const tunnelState = readTunnel();
+  const running = Boolean(tunnelState?.cfPid && isAlive(tunnelState.cfPid));
   return {
-    tunnelState: readTunnel(),
+    tunnelState,
     openDesign: detectOpenDesignForJson(opts.pattern),
     tailscale: buildTailscaleSummary(),
     now: Date.now(),
+    running,
   };
 }
 
@@ -797,11 +814,14 @@ function cmdSessions(opts) {
 
   if (opts.json) {
     // 순수 JSON 한 줄만 stdout으로 — IP는 buildSessionsJson 내부 maskIp로만 노출된다.
+    // [running false-telemetry] cf 생존 여부를 isAlive로 계산해 주입(텍스트 경로 판정과 일관).
+    const running = Boolean(tunnelState?.cfPid && isAlive(tunnelState.cfPid));
     const envelope = buildSessionsJson({
       tunnelState,
       sessions: view.sessions,
       openDesign: detectOpenDesignForJson(opts.pattern),
       now,
+      running,
     });
     console.log(JSON.stringify(envelope));
     return;

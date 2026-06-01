@@ -220,6 +220,42 @@ function testViewDerived() {
   console.log('PASS (S7): buildSessionsView potentialOrphan 파생 + graceful 빈 로그');
 }
 
+// (S8) [running/idle false-telemetry] sessions/status 빌더가 주입 running을 반영하고,
+//      idleMin 저장 시 idle.enabled를 정확히 보고하며, idle 정보 미저장 시 idle:null(unknown).
+function testRunningAndIdleTelemetry() {
+  // idleMin=30 저장(신버전 tunnel.json) + running 주입.
+  const stored = {
+    cfPid: 4321,
+    url: 'https://abc-def.trycloudflare.com',
+    startedAt: NOW - 60000,
+    ttlMs: 120000,
+    idleMin: 30,
+  };
+  const view = buildSessionsView({ tunnelState: stored, authLogText: '', now: NOW });
+  const aliveEnv = buildSessionsJson({
+    tunnelState: stored, sessions: view.sessions, openDesign: { detected: false, reason: 'test' }, now: NOW, running: true,
+  });
+  assert.equal(aliveEnv.tunnel.running, true, 'running=true 주입 → tunnel.running:true');
+  assert.equal(aliveEnv.tunnel.idle.enabled, true, 'idleMin=30 저장 → idle.enabled:true');
+  assert.equal(aliveEnv.tunnel.idle.idleMin, 30, 'idle.idleMin=30 정확');
+  assert.equal(aliveEnv.tunnel.idle.remainingSec, null, 'idle.remainingSec 항상 null(F1)');
+
+  // running 미주입(stale state) → running:false(거짓 true 금지).
+  const staleEnv = buildStatusJson({
+    tunnelState: stored, openDesign: { detected: false, reason: 'test' }, tailscale: null, now: NOW,
+  });
+  assert.equal(staleEnv.tunnel.running, false, 'running 미주입 → running:false');
+
+  // idle 정보 미저장 구버전(idleMin/idleMs 없음) → idle:null(enabled:false 거짓 단정 금지).
+  const legacy = { cfPid: 4321, url: 'https://abc-def.trycloudflare.com', startedAt: NOW - 60000, ttlMs: 120000 };
+  const legacyEnv = buildStatusJson({
+    tunnelState: legacy, openDesign: { detected: false, reason: 'test' }, tailscale: null, now: NOW, running: true,
+  });
+  assert.equal(legacyEnv.tunnel.idle, null, 'idle 정보 미저장(구버전) → idle:null(unknown)');
+  assert.equal(legacyEnv.tunnel.running, true, 'running=true 주입은 그대로 반영');
+  console.log('PASS (S8): running 주입 반영 + idleMin 저장 시 enabled 정확 + 미저장 시 idle:null');
+}
+
 function main() {
   testParseCounts();
   testParseTunnelKill();
@@ -228,6 +264,7 @@ function main() {
   testIdleRemainingNull();
   testMissingStartedAtNullUptime();
   testViewDerived();
+  testRunningAndIdleTelemetry();
   console.log('\n모든 sessions 테스트 통과 ✅');
   process.exit(0);
 }

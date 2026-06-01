@@ -87,6 +87,9 @@ export function readTunnel() {
   // 선택 필드라 값이 있을 때만 검증하므로, 두 필드가 없는 구버전 tunnel.json은 그대로 통과한다(하위호환).
   if (parsed.startedAt !== undefined && !isPositiveInt(parsed.startedAt)) return null;
   if (parsed.ttlMs !== undefined && !(Number.isInteger(parsed.ttlMs) && parsed.ttlMs >= 0)) return null;
+  // idleMin도 v0.2 선택 필드다(idle 활성 여부 보고용). startedAt/ttlMs와 동일 패턴으로 검증해
+  // 변조된 음수/비정수를 거르고, 미저장 구버전은 그대로 통과시킨다(하위호환).
+  if (parsed.idleMin !== undefined && !(Number.isInteger(parsed.idleMin) && parsed.idleMin >= 0)) return null;
   return parsed;
 }
 

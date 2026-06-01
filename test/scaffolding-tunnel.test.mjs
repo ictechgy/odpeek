@@ -89,6 +89,23 @@ function main() {
     assert.equal(roundTrip.startedAt, startedAt, 'saveTunnel이 startedAt을 보존해야 함');
     assert.equal(roundTrip.ttlMs, 120000, 'saveTunnel이 ttlMs를 보존해야 함');
     console.log('PASS: saveTunnel startedAt/ttlMs 왕복 보존');
+
+    // (e) [idle false-telemetry] idleMin 선택 필드 검증(startedAt/ttlMs와 동일 패턴).
+    //     음수/실수는 거부, 0과 양의 정수는 통과, 미지정 구버전은 그대로 통과(하위호환).
+    for (const badIdleMin of [-1, 1.5]) {
+      writeRawState({ ...VALID_BASE, startedAt: Date.now(), idleMin: badIdleMin });
+      assert.equal(readTunnel(), null, `(e) idleMin=${badIdleMin}는 거부(null)해야 함`);
+    }
+    writeRawState({ ...VALID_BASE, startedAt: Date.now(), idleMin: 0 });
+    assert.ok(readTunnel() !== null, '(e) idleMin=0은 통과해야 함(비활성)');
+    console.log('PASS: (e) idleMin 음수/실수 → null, idleMin=0/양의정수 통과');
+
+    // idleMin 왕복 보존(saveTunnel→readTunnel) 확인.
+    clearTunnel();
+    saveTunnel({ ...VALID_BASE, startedAt, ttlMs: 120000, idleMin: 30 });
+    const idleRoundTrip = readTunnel();
+    assert.equal(idleRoundTrip.idleMin, 30, 'saveTunnel이 idleMin을 보존해야 함');
+    console.log('PASS: saveTunnel idleMin 왕복 보존');
   } finally {
     // 기존 사용자 상태 복원(테스트가 사용자 파일을 덮어쓰지 않도록 보장).
     if (backup !== null) {
