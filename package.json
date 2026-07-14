@@ -1,6 +1,6 @@
 {
   "name": "odpeek",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Expose Open Design's local web UI to your phone over Tailscale (Wi-Fi) or a Cloudflare tunnel (cellular) — a tiny zero-dependency CLI.",
   "type": "module",
   "scripts": {

@@ -182,7 +182,7 @@ For stronger identity-based auth (Google / email OTP, MFA, audit logs), see
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-p, --port <n>` | tailnet exposure port | `8080` (env `ODPEEK_PORT`) |
-| `--pattern <s>` | OD process match pattern | packaged `web-sidecar.mjs` + current `web/sidecar/index.ts/js` |
+| `--pattern <s>` | OD process match pattern | packaged Next/web sidecar + current `apps/web/sidecar/index.ts/js` |
 | `--idle <min>` | tunnel idle auto-shutdown (minutes, `0` = off) | `30` (env `ODPEEK_IDLE_MIN`) |
 | `--ttl <min>` | tunnel hard maximum lifetime (minutes, `0` = off). Closes the tunnel after N minutes **regardless of activity** — independent of idle. | `0` (env `ODPEEK_TTL_MIN`) |
 | `--json` | Output `status` / `doctor` / `sessions` as a single-line JSON (pipe-safe, automation-friendly). Never includes passwords or full IPs. | off |
@@ -211,10 +211,12 @@ Environment variables: `ODPEEK_PORT`, `ODPEEK_AUTH_PORT`,
 
 ### How it works
 
-1. `pgrep` finds either the packaged `web-sidecar.mjs` process or the current
-   `apps/web/sidecar/index.ts/js` process.
-2. `lsof` ignores non-listening runtime wrappers and finds the single actual
-   web-sidecar PID/port that is LISTENing.
+1. For the packaged desktop app, odpeek resolves the owner of its namespace
+   `web.sock` and verifies the standalone Open Design web runtime. For current
+   development builds, `pgrep` finds `apps/web/sidecar/index.ts/js`.
+2. `lsof` ignores non-listening runtime wrappers. If packaged Next.js exposes
+   multiple ports, odpeek selects the sole port whose `/api/projects` response
+   is the Open Design JSON shape; ambiguous processes or ports still fail closed.
 3. `tailscale serve --bg --tcp=8080 tcp://127.0.0.1:<port>` exposes it
    (L4 TCP so the IP is reachable; via `tailscaled` so it bypasses the firewall
    / netstack).
@@ -402,7 +404,7 @@ odpeek sessions --json   # 같은 내용을 JSON 한 줄로 출력합니다 (파
 | 옵션 | 설명 | 기본값 |
 |------|------|--------|
 | `-p, --port <n>` | tailnet 노출 포트 | `8080` (환경변수 `ODPEEK_PORT`) |
-| `--pattern <s>` | OD 프로세스 매칭 패턴 | packaged `web-sidecar.mjs` + 최신 `web/sidecar/index.ts/js` |
+| `--pattern <s>` | OD 프로세스 매칭 패턴 | packaged Next/web sidecar + 최신 `apps/web/sidecar/index.ts/js` |
 | `--idle <min>` | 터널 유휴 자동 종료 시간 (분, `0`이면 끔) | `30` (환경변수 `ODPEEK_IDLE_MIN`) |
 | `--ttl <min>` | 터널 최대 수명(분, `0`이면 끔). 활동 유무와 무관하게 N분 후 강제 종료합니다. 유휴보다 먼저 끝날 수도, 나중에 끝날 수도 있습니다. | `0` (환경변수 `ODPEEK_TTL_MIN`) |
 | `--json` | `status`·`doctor`·`sessions` 출력을 JSON 한 줄로(파이프·자동화·Claude 플러그인용). 비밀번호·전체 IP는 포함되지 않습니다. | 끔 |
@@ -430,10 +432,12 @@ odpeek sessions --json   # 같은 내용을 JSON 한 줄로 출력합니다 (파
 
 ### 동작 원리
 
-1. `pgrep`로 packaged `web-sidecar.mjs` 또는 최신
+1. packaged 데스크톱 앱은 namespace `web.sock`의 소유 PID와 Open Design standalone
+   web 작업 디렉터리를 확인합니다. 개발 빌드는 `pgrep`로
    `apps/web/sidecar/index.ts/js` 프로세스를 찾습니다.
-2. `lsof`로 포트를 열지 않은 런타임 래퍼를 제외하고, 실제 LISTEN 중인 단일
-   web-sidecar PID와 로컬 포트를 알아냅니다.
+2. `lsof`로 비리스닝 런타임 래퍼를 제외합니다. packaged Next.js가 여러 포트를
+   열면 `/api/projects`가 Open Design JSON 형식인 단 하나의 포트만 고르며,
+   프로세스나 포트가 여전히 모호하면 공개 노출하지 않고 중단합니다.
 3. `tailscale serve --bg --tcp=8080 tcp://127.0.0.1:<포트>`로 노출합니다 (L4
    TCP라 IP로 접속할 수 있고, tailscaled를 거치므로 방화벽·netstack을 우회합니다).
 4. `tailscale status --json`의 `Self.TailscaleIPs`·`Self.DNSName`으로 접속
