@@ -4,7 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { platform } from 'node:os';
 
 // OD 웹 UI를 서빙하는 사이드카 프로세스의 명령줄 매칭 패턴(정규식 문자열).
-export const DEFAULT_PATTERN = 'web-sidecar\\.mjs';
+// 기존 packaged 번들(web-sidecar.mjs)과 최신 개발/배포 sidecar 엔트리를 함께 지원한다.
+export const DEFAULT_PATTERN =
+  'web-sidecar\\.mjs|(@open-design/web|apps/web)/(dist/)?sidecar/index\\.(ts|js)';
 
 /**
  * 패턴에 매칭되는 프로세스들의 PID 목록을 반환한다.
@@ -39,11 +41,22 @@ function findPids(pattern) {
  */
 function listeningPorts(pid) {
   // lsof는 macOS/Linux 공통으로 존재한다. -a 로 PID 조건과 LISTEN 조건을 AND 결합한다.
-  const output = execFileSync(
-    'lsof',
-    ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)],
-    { encoding: 'utf8' },
-  );
+  let output;
+  try {
+    output = execFileSync(
+      'lsof',
+      ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)],
+      { encoding: 'utf8' },
+    );
+  } catch (error) {
+    // lsof는 해당 PID에 LISTEN 소켓이 없으면 exit 1을 반환한다. 최신 개발 런타임의
+    // tsx 래퍼처럼 실제 sidecar 자식과 같은 명령줄 패턴을 갖는 비리스닝 부모는 무시한다.
+    if (error.status === 1) return [];
+    if (error.code === 'ENOENT') {
+      throw new Error('lsof를 찾을 수 없습니다. macOS/Linux에서 실행하세요.');
+    }
+    throw error;
+  }
   const ports = new Set();
   for (const line of output.split('\n')) {
     const match = line.match(/:(\d+)\s+\(LISTEN\)/);
@@ -68,21 +81,25 @@ export function detectWebPort(pattern = DEFAULT_PATTERN) {
       'Open Design web-sidecar 프로세스를 찾을 수 없습니다. OD가 실행 중인지 확인하세요.',
     );
   }
-  // 패턴이 너무 넓어 여러 프로세스가 잡히면, 엉뚱한 로컬 서비스를 공개로 노출할
-  // 위험이 있으므로 임의 선택하지 않고 중단한다.
-  if (pids.length > 1) {
+  // 최신 개발 런타임은 tsx 래퍼와 실제 Node 자식이 같은 sidecar 경로를 명령줄에
+  // 포함한다. 비리스닝 래퍼는 버리고 실제 LISTEN 소켓이 있는 후보만 판정한다.
+  const listeners = pids
+    .map((pid) => ({ pid, ports: listeningPorts(pid) }))
+    .filter(({ ports }) => ports.length > 0);
+  if (listeners.length === 0) {
     throw new Error(
-      `패턴 "${pattern}"이 여러 프로세스(${pids.join(', ')})에 매칭됩니다. ` +
+      `패턴 "${pattern}"에 매칭된 PID(${pids.join(', ')})에서 LISTEN 포트를 찾지 못했습니다.`,
+    );
+  }
+  // 여러 실제 리스너가 잡히면 엉뚱한 로컬 서비스를 공개로 노출할 위험이 있으므로
+  // 임의 선택하지 않는다. 한 프로세스가 여러 포트를 여는 경우도 동일하게 중단한다.
+  if (listeners.length > 1) {
+    throw new Error(
+      `패턴 "${pattern}"이 여러 LISTEN 프로세스(${listeners.map(({ pid }) => pid).join(', ')})에 매칭됩니다. ` +
         '--pattern으로 더 구체적인 패턴을 지정하세요(엉뚱한 서비스 노출 방지).',
     );
   }
-  const pid = pids[0];
-  const ports = listeningPorts(pid);
-  if (ports.length === 0) {
-    throw new Error(`PID ${pid}의 LISTEN 포트를 찾지 못했습니다.`);
-  }
-  // 한 프로세스가 여러 포트를 LISTEN 중이면 어느 것이 웹 UI인지 모호하다.
-  // 임의로 골라 엉뚱한 로컬 서비스를 공개 노출하지 않도록 중단한다.
+  const [{ pid, ports }] = listeners;
   if (ports.length > 1) {
     throw new Error(
       `PID ${pid}가 여러 포트(${ports.join(', ')})를 LISTEN 중입니다. ` +
