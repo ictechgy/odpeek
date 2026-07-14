@@ -6,12 +6,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runAuthProxy } from '../src/authProxy.mjs';
-import { DEFAULT_PATTERN, detectWebPort } from '../src/openDesign.mjs';
+import { __openDesignInternals, DEFAULT_PATTERN, detectWebPort } from '../src/openDesign.mjs';
 
 const USER = 'od';
 const PASS = 'update-test-pass';
@@ -99,6 +99,100 @@ async function testUpdatedSidecarDetection() {
     console.log('PASS: 최신 web sidecar 경로 + 비리스닝 래퍼 PID 감지');
   } finally {
     await Promise.all([stopChild(wrapper), stopChild(listener)]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testPackagedNextServerDetection() {
+  const dir = mkdtempSync(join(tmpdir(), 'odpeek-packaged-next-'));
+  const packagedCwd = join(
+    dir,
+    'Open Design.app',
+    'Contents',
+    'Resources',
+    'open-design-web-standalone',
+    'apps',
+    'web',
+  );
+  const portFile = join(dir, 'ports.json');
+  const serverFile = join(dir, 'next-server.mjs');
+  mkdirSync(packagedCwd, { recursive: true });
+  writeFileSync(
+    serverFile,
+    [
+      "import http from 'node:http';",
+      "import { writeFileSync } from 'node:fs';",
+      "process.title = 'next-server (v16.2.6)';",
+      "const shell = http.createServer((_req, res) => {",
+      "  res.writeHead(200, { 'Content-Type': 'text/html' });",
+      "  res.end('<!doctype html><title>shell</title>');",
+      '});',
+      "const api = http.createServer((req, res) => {",
+      "  if (req.url === '/api/projects') {",
+      "    res.writeHead(200, { 'Content-Type': 'application/json' });",
+      "    res.end(JSON.stringify({ projects: [] }));",
+      '    return;',
+      '  }',
+      "  res.writeHead(200, { 'Content-Type': 'text/html' });",
+      "  res.end('<!doctype html><title>Open Design</title>');",
+      '});',
+      "shell.listen(0, '127.0.0.1', () => {",
+      "  api.listen(0, '127.0.0.1', () => writeFileSync(process.argv[2], JSON.stringify({",
+      '    shell: shell.address().port,',
+      '    api: api.address().port,',
+      '  })));',
+      '});',
+      "process.on('SIGTERM', () => shell.close(() => api.close(() => process.exit(0))));",
+    ].join('\n'),
+  );
+  const child = spawn(process.execPath, [serverFile, portFile], {
+    cwd: packagedCwd,
+    stdio: 'ignore',
+  });
+
+  try {
+    const ports = await waitFor(() => {
+      try {
+        return JSON.parse(readFileSync(portFile, 'utf8'));
+      } catch {
+        return null;
+      }
+    }, 'packaged Next.js 더미 서버가 포트를 열지 못했습니다');
+
+    assert.equal(
+      __openDesignInternals.isPackagedWebCwd(packagedCwd),
+      true,
+      'packaged standalone web cwd를 식별해야 함',
+    );
+    assert.equal(
+      __openDesignInternals.selectProjectApiPort([ports.shell, ports.api]),
+      ports.api,
+      '여러 LISTEN 포트 중 /api/projects JSON을 제공하는 포트를 선택해야 함',
+    );
+    assert.deepEqual(
+      __openDesignInternals.selectPreferredListener([
+        { pid: 101, ports: [41001], source: 'pattern' },
+        { pid: child.pid, ports: [ports.shell, ports.api], source: 'packaged' },
+      ]),
+      { pid: child.pid, ports: [ports.shell, ports.api], source: 'packaged' },
+      'desktop packaged sidecar가 있으면 default 개발 sidecar보다 우선해야 함',
+    );
+    assert.throws(
+      () => __openDesignInternals.selectProjectApiPort([ports.shell, ports.shell]),
+      /api\/projects 포트를 하나로 식별하지 못했습니다/,
+      'JSON 프로젝트 API가 없는 다중 포트는 임의 선택하지 않아야 함',
+    );
+    assert.throws(
+      () => __openDesignInternals.selectPreferredListener([
+        { pid: 201, ports: [42001], source: 'packaged' },
+        { pid: 202, ports: [42002], source: 'packaged' },
+      ]),
+      /여러 LISTEN 프로세스/,
+      'packaged sidecar가 여러 개면 임의 선택하지 않아야 함',
+    );
+    console.log('PASS: packaged next-server cwd + 이중 포트 API 식별 + stable 우선 선택');
+  } finally {
+    await stopChild(child);
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -300,6 +394,7 @@ async function testOriginAndMobileArtifactHelper() {
 
 async function main() {
   await testUpdatedSidecarDetection();
+  await testPackagedNextServerDetection();
   await testOriginAndMobileArtifactHelper();
   console.log('\nOpen Design 업데이트 호환성 테스트 통과 ✅');
 }
