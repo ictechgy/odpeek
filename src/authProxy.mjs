@@ -28,6 +28,9 @@ const GLOBAL_MAX_FAILS = 200;
 const GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 // upstream(OD) 응답이 없을 때 소켓을 무한정 잡지 않도록 거는 타임아웃.
 const UPSTREAM_TIMEOUT_MS = 30 * 1000;
+// 앱 shell helper 주입을 위해 메모리에 보관할 최대 응답 크기. 초과 응답은 helper 없이
+// 그대로 스트리밍해, 인증된 요청이나 향후 upstream 변화가 프록시 메모리를 고갈시키지 않게 한다.
+const MAX_APP_SHELL_BYTES = 5 * 1024 * 1024;
 // HSTS 만료(1년). 리터럴 대신 계산식으로 의도를 드러낸다.
 const HSTS_MAX_AGE_SEC = 365 * 24 * 60 * 60;
 
@@ -513,9 +516,37 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
           return;
         }
 
+        const declaredLength = Number(upstreamRes.headers['content-length']);
+        if (Number.isSafeInteger(declaredLength) && declaredLength > MAX_APP_SHELL_BYTES) {
+          res.writeHead(upstreamRes.statusCode, withSecurity(cleanResponseHeaders(upstreamRes.headers)));
+          upstreamRes.pipe(res);
+          return;
+        }
+
         const chunks = [];
-        upstreamRes.on('data', (chunk) => chunks.push(chunk));
-        upstreamRes.on('end', () => {
+        let bufferedBytes = 0;
+        let buffering = true;
+        const streamWithoutInjection = () => {
+          if (!buffering) return;
+          buffering = false;
+          upstreamRes.removeListener('data', onData);
+          upstreamRes.removeListener('end', onEnd);
+          if (res.destroyed) {
+            upstreamRes.destroy();
+            return;
+          }
+          res.writeHead(upstreamRes.statusCode, withSecurity(cleanResponseHeaders(upstreamRes.headers)));
+          for (const chunk of chunks) res.write(chunk);
+          chunks.length = 0;
+          upstreamRes.pipe(res);
+        };
+        const onData = (chunk) => {
+          chunks.push(chunk);
+          bufferedBytes += chunk.length;
+          if (bufferedBytes > MAX_APP_SHELL_BYTES) streamWithoutInjection();
+        };
+        const onEnd = () => {
+          if (!buffering) return;
           if (res.destroyed) return;
           const injected = Buffer.from(injectMobileArtifactHelper(Buffer.concat(chunks).toString('utf8')));
           const headers = cleanResponseHeaders(upstreamRes.headers);
@@ -527,7 +558,9 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
           headers['cache-control'] = 'no-store';
           res.writeHead(upstreamRes.statusCode, withSecurity(headers));
           res.end(injected);
-        });
+        };
+        upstreamRes.on('data', onData);
+        upstreamRes.on('end', onEnd);
       },
     );
     // OD가 응답하지 않으면 소켓을 무한정 잡지 않도록 타임아웃을 건다.

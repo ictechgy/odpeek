@@ -138,6 +138,7 @@ function request(port, path, options = {}) {
 async function testOriginAndMobileArtifactHelper() {
   let lastUpstreamHeaders = null;
   let upstreamRequestCount = 0;
+  const oversizedShell = 'A'.repeat(5 * 1024 * 1024 + 1);
   const upstream = http.createServer((req, res) => {
     upstreamRequestCount += 1;
     lastUpstreamHeaders = req.headers;
@@ -157,6 +158,22 @@ async function testOriginAndMobileArtifactHelper() {
         'Content-Length': Buffer.byteLength(body),
       });
       res.end(body);
+      return;
+    }
+    if (req.url === '/project/oversized') {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': Buffer.byteLength(oversizedShell),
+      });
+      res.end(oversizedShell);
+      return;
+    }
+    if (req.url === '/project/chunked-oversized') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      for (let offset = 0; offset < oversizedShell.length; offset += 64 * 1024) {
+        res.write(oversizedShell.slice(offset, offset + 64 * 1024));
+      }
+      res.end();
       return;
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -243,6 +260,19 @@ async function testOriginAndMobileArtifactHelper() {
       'helper 주입 후 Content-Length를 다시 계산해야 함',
     );
     assert.equal(lastUpstreamHeaders?.['accept-encoding'], 'identity', 'HTML shell은 주입을 위해 identity로 요청');
+
+    for (const path of ['/project/oversized', '/project/chunked-oversized']) {
+      const oversized = await request(listenPort, path, {
+        headers: { accept: 'text/html,application/xhtml+xml' },
+      });
+      assert.equal(oversized.status, 200);
+      assert.equal(oversized.body, oversizedShell, `${path}의 큰 HTML은 변형 없이 스트리밍해야 함`);
+      assert.doesNotMatch(
+        oversized.body,
+        /mobile-artifacts\.js/,
+        `${path}의 버퍼 상한 초과 HTML에는 helper를 주입하지 않아야 함`,
+      );
+    }
 
     const beforeHelper = upstreamRequestCount;
     const helper = await request(listenPort, '/__odpeek/mobile-artifacts.js');
