@@ -31,6 +31,99 @@ const UPSTREAM_TIMEOUT_MS = 30 * 1000;
 // HSTS 만료(1년). 리터럴 대신 계산식으로 의도를 드러낸다.
 const HSTS_MAX_AGE_SEC = 365 * 24 * 60 * 60;
 
+// Open Design의 모바일 채팅에서는 산출물 "열기"가 데스크톱 작업공간 탭만 바꾼다.
+// 좁은 화면에서는 그 작업공간이 보이지 않으므로, 앱 shell에 작은 same-origin helper를
+// 주입해 실제 /api/projects/.../raw/... URL을 새 탭으로 연다. 사용자 산출물 HTML 자체는
+// 절대 수정하지 않는다.
+const MOBILE_ARTIFACT_HELPER_PATH = '/__odpeek/mobile-artifacts.js';
+const MOBILE_ARTIFACT_HELPER_TAG =
+  `<script src="${MOBILE_ARTIFACT_HELPER_PATH}" defer data-odpeek-mobile-artifacts></script>`;
+const MOBILE_ARTIFACT_HELPER_SCRIPT = String.raw`(() => {
+  'use strict';
+  const mobile = () =>
+    window.matchMedia('(max-width: 1024px)').matches ||
+    window.matchMedia('(pointer: coarse)').matches;
+  const rawPath = /^\/api\/projects\/[^/]+\/raw\//;
+
+  function rawLinkFor(row) {
+    const links = row.querySelectorAll('a[href]');
+    for (const link of links) {
+      try {
+        const url = new URL(link.getAttribute('href'), window.location.href);
+        if (url.origin === window.location.origin && rawPath.test(url.pathname)) return link;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function openRaw(link) {
+    const url = new URL(link.getAttribute('href'), window.location.href);
+    window.open(url.href, '_blank', 'noopener,noreferrer');
+  }
+
+  function enhanceRow(row) {
+    if (row.dataset.odpeekMobileArtifacts === '1') return;
+    const rawLink = rawLinkFor(row);
+    if (!rawLink) return;
+    row.dataset.odpeekMobileArtifacts = '1';
+
+    const actions = row.querySelector('.produced-file-actions');
+    const openButton = actions && actions.querySelector('button.ghost');
+    if (openButton) {
+      const openLink = document.createElement('a');
+      openLink.className = 'ghost-link';
+      openLink.href = rawLink.href;
+      openLink.target = '_blank';
+      openLink.rel = 'noopener noreferrer';
+      openLink.textContent = openButton.textContent;
+      openLink.setAttribute('data-odpeek-open-artifact', 'new-tab');
+      openButton.replaceWith(openLink);
+    }
+
+    const name = row.querySelector('.produced-file-name');
+    if (name) {
+      name.setAttribute('role', 'link');
+      name.setAttribute('tabindex', '0');
+      name.setAttribute('title', (name.getAttribute('title') || name.textContent || '') + ' ↗');
+      name.style.cursor = 'pointer';
+      name.addEventListener('click', () => openRaw(rawLink));
+      name.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        openRaw(rawLink);
+      });
+    }
+  }
+
+  function enhance() {
+    if (!mobile()) return;
+    document.querySelectorAll('.produced-file').forEach(enhanceRow);
+    document.querySelectorAll('a[href]').forEach((link) => {
+      try {
+        const url = new URL(link.getAttribute('href'), window.location.href);
+        if (url.origin !== window.location.origin || !rawPath.test(url.pathname)) return;
+        if (!link.hasAttribute('download')) {
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+        }
+      } catch (_) {}
+    });
+  }
+
+  let scheduled = false;
+  function scheduleEnhance() {
+    if (scheduled) return;
+    scheduled = true;
+    window.requestAnimationFrame(() => {
+      scheduled = false;
+      enhance();
+    });
+  }
+
+  enhance();
+  new MutationObserver(scheduleEnhance).observe(document.documentElement, { childList: true, subtree: true });
+})();`;
+
 // upstream(OD)으로 전달하면 안 되는 헤더.
 //  - authorization: 프록시에서 소비하는 자격이므로 OD로 새지 않게 제거.
 //  - hop-by-hop 헤더: 프록시 경계에서 끝나야 하며 전달 시 요청 스머글링 위험.
@@ -265,14 +358,67 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
     return { ip, state: 'ok' };
   };
 
-  /** upstream으로 전달할 헤더를 정리한다(인증/hop-by-hop 제거, Host 재작성). */
-  const forwardHeaders = (reqHeaders) => {
+  /** Open Design 앱 shell 문서인지 판정한다(사용자 artifact HTML과 API 응답은 제외). */
+  const isAppShellRequest = (req) => {
+    if (req.method !== 'GET') return false;
+    const pathname = String(req.url || '').split('?', 1)[0];
+    if (
+      pathname === MOBILE_ARTIFACT_HELPER_PATH ||
+      pathname === '/api' || pathname.startsWith('/api/') ||
+      pathname === '/artifacts' || pathname.startsWith('/artifacts/') ||
+      pathname === '/frames' || pathname.startsWith('/frames/') ||
+      pathname === '/_next' || pathname.startsWith('/_next/')
+    ) return false;
+    return String(req.headers.accept || '').toLowerCase().includes('text/html');
+  };
+
+  /** 요청의 Origin이 브라우저가 접속한 공개 Host와 같은 origin인지 확인한다. */
+  const isVisibleSameOrigin = (origin, reqHeaders) => {
+    const visibleHost = reqHeaders.host;
+    if (typeof visibleHost !== 'string' || !visibleHost) return false;
+
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) return false;
+
+      const hostUrl = new URL(`${parsed.protocol}//${visibleHost}`);
+      if (hostUrl.hostname.toLowerCase() !== parsed.hostname.toLowerCase()) return false;
+      const defaultPort = parsed.protocol === 'https:' ? '443' : '80';
+      if ((hostUrl.port || defaultPort) !== (parsed.port || defaultPort)) return false;
+
+      const forwardedProto = typeof reqHeaders['x-forwarded-proto'] === 'string'
+        ? reqHeaders['x-forwarded-proto'].split(',', 1)[0].trim().toLowerCase()
+        : '';
+      if ((forwardedProto === 'http' || forwardedProto === 'https') && `${forwardedProto}:` !== parsed.protocol) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** upstream으로 전달할 헤더를 정리한다(인증/hop-by-hop 제거, Host·Origin 재작성). */
+  const forwardHeaders = (reqHeaders, { appShell = false } = {}) => {
     const out = {};
     for (const [key, value] of Object.entries(reqHeaders)) {
       if (STRIPPED_REQUEST_HEADERS.has(key.toLowerCase())) continue;
       out[key] = value;
     }
     out.host = `127.0.0.1:${targetPort}`;
+    // 공개 터널의 same-origin 브라우저 요청만 최신 Open Design이 허용하는 로컬
+    // web-sidecar origin으로 정규화한다. 다른 사이트의 Origin은 그대로 전달해 upstream
+    // CSRF 검사가 거부하도록 하며, Origin 부재와 sandbox iframe의 "null"도 보존한다.
+    if (
+      typeof out.origin === 'string' &&
+      out.origin !== 'null' &&
+      isVisibleSameOrigin(out.origin, reqHeaders)
+    ) {
+      out.origin = `http://127.0.0.1:${targetPort}`;
+    }
+    // 앱 shell에 helper를 넣을 때만 압축을 끈다. JS/CSS/API/SSE는 기존 압축 협상을 유지한다.
+    if (appShell) out['accept-encoding'] = 'identity';
     return out;
   };
 
@@ -289,6 +435,14 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
   /** 보안 헤더를 헤더 객체에 병합해 반환한다. */
   const withSecurity = (headers = {}) => ({ ...headers, ...SECURITY_HEADERS });
 
+  /** 앱 shell HTML에 모바일 helper 태그를 삽입한다. */
+  const injectMobileArtifactHelper = (body) => {
+    if (body.includes('data-odpeek-mobile-artifacts')) return body;
+    const closeBody = body.toLowerCase().lastIndexOf('</body>');
+    if (closeBody === -1) return `${body}${MOBILE_ARTIFACT_HELPER_TAG}`;
+    return `${body.slice(0, closeBody)}${MOBILE_ARTIFACT_HELPER_TAG}${body.slice(closeBody)}`;
+  };
+
   const server = http.createServer((req, res) => {
     const { ip, state } = evaluate(req);
 
@@ -304,8 +458,24 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
       return;
     }
 
-    // 인증 성공 — 활동 시각 갱신, 헤더 정리 후 OD로 프록시.
+    // 인증 성공 — 활동 시각 갱신, helper 응답 또는 OD 프록시.
     lastActivity = Date.now();
+    if (req.url?.split('?', 1)[0] === MOBILE_ARTIFACT_HELPER_PATH) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, withSecurity({ Allow: 'GET, HEAD' }));
+        res.end();
+        return;
+      }
+      const body = Buffer.from(MOBILE_ARTIFACT_HELPER_SCRIPT);
+      res.writeHead(200, withSecurity({
+        'Content-Type': 'text/javascript; charset=utf-8',
+        'Content-Length': body.length,
+        'Cache-Control': 'no-store',
+      }));
+      res.end(req.method === 'HEAD' ? undefined : body);
+      return;
+    }
+
     activeConnections += 1;
     let settled = false;
     const finish = () => {
@@ -315,13 +485,14 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
       lastActivity = Date.now();
     };
 
+    const appShell = isAppShellRequest(req);
     const upstream = http.request(
       {
         hostname: '127.0.0.1',
         port: targetPort,
         path: req.url,
         method: req.method,
-        headers: forwardHeaders(req.headers),
+        headers: forwardHeaders(req.headers, { appShell }),
       },
       (upstreamRes) => {
         // 클라이언트가 이미 끊겼으면 응답을 버린다(헤더 전송 후 쓰기 에러 방지).
@@ -329,8 +500,34 @@ export function runAuthProxy(listenPort, targetPort, user, pass, options = {}) {
           upstreamRes.destroy();
           return;
         }
-        res.writeHead(upstreamRes.statusCode, withSecurity(cleanResponseHeaders(upstreamRes.headers)));
-        upstreamRes.pipe(res);
+        const contentType = String(upstreamRes.headers['content-type'] || '').toLowerCase();
+        const contentEncoding = String(upstreamRes.headers['content-encoding'] || '').toLowerCase();
+        const canInject =
+          appShell &&
+          upstreamRes.statusCode === 200 &&
+          contentType.includes('text/html') &&
+          (!contentEncoding || contentEncoding === 'identity');
+        if (!canInject) {
+          res.writeHead(upstreamRes.statusCode, withSecurity(cleanResponseHeaders(upstreamRes.headers)));
+          upstreamRes.pipe(res);
+          return;
+        }
+
+        const chunks = [];
+        upstreamRes.on('data', (chunk) => chunks.push(chunk));
+        upstreamRes.on('end', () => {
+          if (res.destroyed) return;
+          const injected = Buffer.from(injectMobileArtifactHelper(Buffer.concat(chunks).toString('utf8')));
+          const headers = cleanResponseHeaders(upstreamRes.headers);
+          delete headers['content-encoding'];
+          delete headers['content-length'];
+          delete headers.etag;
+          delete headers['last-modified'];
+          headers['content-length'] = injected.length;
+          headers['cache-control'] = 'no-store';
+          res.writeHead(upstreamRes.statusCode, withSecurity(headers));
+          res.end(injected);
+        });
       },
     );
     // OD가 응답하지 않으면 소켓을 무한정 잡지 않도록 타임아웃을 건다.
